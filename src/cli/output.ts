@@ -12,13 +12,15 @@ import {
 } from "../config/app.ts";
 import { writeTerminalBlock } from "../shared/terminal.ts";
 
+const APP_COMMAND = "rg-cli";
+
 function getHelpLines(): string[] {
   return [
     APP_NAME,
     APP_DESCRIPTION,
     "",
     "使用如下指令:",
-    "  bun run src/index.ts [options]",
+    `  ${APP_COMMAND} [options]`,
     "",
     "选项:",
     "  -h, --help       显示帮助信息",
@@ -43,9 +45,9 @@ export function printInvalidOption(option: string): void {
 
 export function printNonInteractiveNotice(): void {
   writeTerminalBlock([
-    "RG CLI 需要一个交互式终端来启动 UI。",
+    "RG CLI 需要在交互式终端中启动 UI。",
     "请尝试以下命令:",
-    "  bun run src/index.ts --help",
-    "  bun run src/index.ts --version",
+    `  ${APP_COMMAND} --help`,
+    `  ${APP_COMMAND} --version`,
   ]);
 }

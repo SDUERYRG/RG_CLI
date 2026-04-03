@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * 文件信息
  * 时间：2026-04-03 23:50:53 +08:00
@@ -35,6 +35,15 @@ export async function startCli(
   await runApp();
 }
 
+async function bootstrap(): Promise<void> {
+  try {
+    await startCli();
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  }
+}
+
 if (import.meta.main) {
-  await startCli();
+  void bootstrap();
 }
