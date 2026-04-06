@@ -10,21 +10,33 @@ import {
   APP_PACKAGE_NAME,
   APP_VERSION,
 } from "../config/app.ts";
+import { getTopLevelCommandSummaries } from "./commands.ts";
 import { writeTerminalBlock } from "../shared/terminal.ts";
 
 const APP_COMMAND = "rg-cli";
 
 function getHelpLines(): string[] {
+  const commandLines = getTopLevelCommandSummaries().map(
+    ({ name, description }) => `  ${name.padEnd(10, " ")}${description}`,
+  );
+
   return [
     APP_NAME,
     APP_DESCRIPTION,
     "",
     "使用如下指令:",
     `  ${APP_COMMAND} [options]`,
+    `  ${APP_COMMAND} <command> [options]`,
+    "",
+    "命令:",
+    ...commandLines,
     "",
     "选项:",
     "  -h, --help       显示帮助信息",
     "  -v, --version    显示 CLI 版本",
+    "  --debug          启用调试模式",
+    "  --cwd <path>     指定启动工作目录",
+    "  --model <name>   指定模型名称",
     "",
     "版本:",
     `  ${APP_PACKAGE_NAME}@${APP_VERSION}`,

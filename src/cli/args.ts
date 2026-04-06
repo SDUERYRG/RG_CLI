@@ -4,23 +4,8 @@
  * 作用：负责解析命令行参数，并将其映射为可执行的 CLI 动作。
  * 说明：保持纯函数设计，便于后续补充更多快捷参数和单元测试。
  */
-export type ShortcutCommand = "help" | "version";
-
-export type CliAction =
-  | {
-      type: "shortcut";
-      command: ShortcutCommand;
-    }
-  | {
-      type: "crash-test";
-    }
-  | {
-      type: "invalid-option";
-      option: string;
-    }
-  | {
-      type: "start";
-    };
+import { isConfigFlag } from "../config/loadConfig.ts";
+import type { CliAction, ShortcutCommand } from "./types.ts";
 
 const shortcutFlagMap: Record<string, ShortcutCommand> = {
   "-h": "help",
@@ -30,7 +15,13 @@ const shortcutFlagMap: Record<string, ShortcutCommand> = {
 };
 
 export function resolveCliAction(argv: string[]): CliAction {
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+
+    if (!arg) {
+      continue;
+    }
+
     const command = shortcutFlagMap[arg];
 
     if (command) {
@@ -44,6 +35,14 @@ export function resolveCliAction(argv: string[]): CliAction {
       return {
         type: "crash-test",
       };
+    }
+
+    if (isConfigFlag(arg)) {
+      if ((arg === "--cwd" || arg === "--model") && !arg.includes("=")) {
+        index += 1;
+      }
+
+      continue;
     }
 
     if (arg.startsWith("-")) {

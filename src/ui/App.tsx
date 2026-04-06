@@ -4,6 +4,7 @@
  * 作用：定义 CLI 主界面，组合头部、消息区、输入框和底部提示。
  * 说明：页面状态集中在这里管理，具体展示拆给子组件处理。
  */
+ import { executeSlashCommand } from "../session/slashCommands.ts";
 import React, { useState } from "react";
 import { Box, useApp, useInput } from "ink";
 import { Footer } from "./components/Footer.tsx";
@@ -34,22 +35,45 @@ export function App() {
   });
 
   function handleSubmit(value: string) {
-    const nextValue = value.trim();
+  const nextValue = value.trim();
 
-    if (!nextValue) {
-      return;
+  if (!nextValue) {
+    return;
+  }
+
+  const slashResult = executeSlashCommand(nextValue);
+
+  if (slashResult.type !== "not-a-command") {
+    if (slashResult.type === "append-messages") {
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        ...slashResult.messages,
+      ]);
     }
 
-    const userMessage = createMessage("user", nextValue);
-    const assistantMessage = createAssistantReply(nextValue);
+    if (slashResult.type === "replace-messages") {
+      setMessages(slashResult.messages);
+    }
 
-    setMessages((currentMessages) => [
-      ...currentMessages,
-      userMessage,
-      assistantMessage,
-    ]);
+    if (slashResult.type === "exit") {
+      exit();
+    }
+
     setQuery("");
+    return;
   }
+
+  const userMessage = createMessage("user", nextValue);
+  const assistantMessage = createAssistantReply(nextValue);
+
+  setMessages((currentMessages) => [
+    ...currentMessages,
+    userMessage,
+    assistantMessage,
+  ]);
+  setQuery("");
+}
+
 
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>

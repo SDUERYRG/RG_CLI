@@ -2,9 +2,11 @@
 /**
  * 文件信息
  * 时间：2026-04-03 23:50:53 +08:00
- * 作用：作为 CLI 主入口，负责分发快捷指令和交互式界面启动流程。
+ * 作用：作为 CLI 主入口，负责分发快捷参数入口和交互式界面启动流程。
  * 说明：这里控制启动顺序，不承载具体输出和界面细节。
  */
+import { loadConfig } from "./config/loadConfig.ts";
+import { runTopLevelCommand } from "./cli/commands.ts";
 import { resolveCliAction } from "./cli/args.ts";
 import {
   printInvalidOption,
@@ -12,12 +14,14 @@ import {
   printUnexpectedError,
 } from "./cli/output.ts";
 import { isInteractiveSession } from "./cli/runtime.ts";
-import { runShortcut } from "./cli/shortcutHandlers.ts";
+import { runShortcut } from "./cli/shortcuts.ts";
+import { getCwd, setCwd } from "./shared/cwd.ts";
 
 export async function startCli(
   argv: string[] = process.argv.slice(2),
 ): Promise<void> {
   const action = resolveCliAction(argv);
+  const config = loadConfig(argv);
 
   if (action.type === "shortcut") {
     runShortcut(action.command);
@@ -34,6 +38,16 @@ export async function startCli(
     throw new Error("Crash test triggered by --crash-test.");
   }
 
+  if (config.cwd && config.cwd !== getCwd()) {
+    setCwd(config.cwd);
+  }
+
+  const handled = await runTopLevelCommand(argv, config);
+
+  if (handled) {
+    return;
+  }
+
   if (!isInteractiveSession()) {
     printNonInteractiveNotice();
     return;
@@ -42,6 +56,7 @@ export async function startCli(
   const { runApp } = await import("./ui/run.tsx");
   await runApp();
 }
+
 
 async function bootstrap(): Promise<void> {
   try {
