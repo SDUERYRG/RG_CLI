@@ -12,6 +12,9 @@ export type CliAction =
       command: ShortcutCommand;
     }
   | {
+      type: "crash-test";
+    }
+  | {
       type: "invalid-option";
       option: string;
     }
@@ -34,6 +37,12 @@ export function resolveCliAction(argv: string[]): CliAction {
       return {
         type: "shortcut",
         command,
+      };
+    }
+
+    if (arg === "--crash-test") {
+      return {
+        type: "crash-test",
       };
     }
 

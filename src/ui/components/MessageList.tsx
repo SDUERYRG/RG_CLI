@@ -6,8 +6,8 @@
  */
 import React from "react";
 import { Box, Text } from "ink";
+import type { ChatMessage } from "../../session/index.ts";
 import { theme } from "../theme.ts";
-import type { ChatMessage } from "../types.ts";
 
 type MessageListProps = {
   messages: ChatMessage[];

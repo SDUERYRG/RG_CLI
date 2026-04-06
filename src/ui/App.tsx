@@ -14,8 +14,8 @@ import {
   createAssistantReply,
   createMessage,
   getWelcomeMessage,
-} from "./lib/messages.ts";
-import type { ChatMessage } from "./types.ts";
+} from "../session/index.ts";
+import type { ChatMessage } from "../session/index.ts";
 
 export function App() {
   const { exit } = useApp();

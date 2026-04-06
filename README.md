@@ -16,6 +16,20 @@ bun install
 bun run dev
 ```
 
+## 异常输出测试
+
+如果你想验证 CLI 的顶层异常捕获和统一错误输出，可以执行：
+
+```bash
+bun run src/index.ts --crash-test
+```
+
+如果你想验证打包后的正式 CLI，也可以执行：
+
+```bash
+node ./dist/cli.cjs --crash-test
+```
+
 ## 构建可分发 CLI
 
 执行下面命令会生成可给 Node 运行的 CLI 文件：

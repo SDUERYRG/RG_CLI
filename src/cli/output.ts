@@ -51,3 +51,18 @@ export function printNonInteractiveNotice(): void {
     `  ${APP_COMMAND} --version`,
   ]);
 }
+
+function getErrorLines(error: unknown): string[] {
+  if (error instanceof Error) {
+    return (error.stack ?? error.message).split(/\r?\n/);
+  }
+
+  return [String(error)];
+}
+
+export function printUnexpectedError(error: unknown): void {
+  writeTerminalBlock(
+    ["RG CLI 启动失败:", ...getErrorLines(error)],
+    process.stderr,
+  );
+}

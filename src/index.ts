@@ -6,7 +6,11 @@
  * 说明：这里控制启动顺序，不承载具体输出和界面细节。
  */
 import { resolveCliAction } from "./cli/args.ts";
-import { printInvalidOption, printNonInteractiveNotice } from "./cli/output.ts";
+import {
+  printInvalidOption,
+  printNonInteractiveNotice,
+  printUnexpectedError,
+} from "./cli/output.ts";
 import { isInteractiveSession } from "./cli/runtime.ts";
 import { runShortcut } from "./cli/shortcutHandlers.ts";
 
@@ -26,6 +30,10 @@ export async function startCli(
     return;
   }
 
+  if (action.type === "crash-test") {
+    throw new Error("Crash test triggered by --crash-test.");
+  }
+
   if (!isInteractiveSession()) {
     printNonInteractiveNotice();
     return;
@@ -39,7 +47,7 @@ async function bootstrap(): Promise<void> {
   try {
     await startCli();
   } catch (error) {
-    console.error(error);
+    printUnexpectedError(error);
     process.exitCode = 1;
   }
 }
