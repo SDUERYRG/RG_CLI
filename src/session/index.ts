@@ -11,6 +11,13 @@ export {
   syncMessageIdSequence,
 } from "./messages.ts";
 export type { ChatMessage, MessageRole } from "./types.ts";
+export type {
+  AgentContentBlock,
+  AgentMessage,
+  AgentMessageRole,
+  AgentToolResultBlock,
+  AgentToolUseBlock,
+} from "./types.ts";
 export {
   createChatSession,
   getChatSessionDisplaySummary,
@@ -21,6 +28,7 @@ export {
   resolveSession,
   saveAiSessionTitleIfNoCustomTitle,
   saveSessionSnapshot,
+  updateChatSessionAgentMessages,
   updateChatSessionAiTitle,
   updateChatSessionCustomTitle,
   updateChatSessionMessages,
@@ -29,6 +37,7 @@ export {
   extractConversationText,
   generateSessionAiTitle,
 } from "./sessionTitle.ts";
+export { QueryEngine } from "./QueryEngine.ts";
 export type {
   ChatSessionSummary,
   PersistedChatSession,

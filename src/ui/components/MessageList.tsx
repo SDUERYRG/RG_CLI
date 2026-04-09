@@ -14,8 +14,20 @@ type MessageListProps = {
 };
 
 function MessageItem({ message }: { message: ChatMessage }) {
-  const title = message.role === "user" ? "You" : "Assistant";
-  const color = message.role === "user" ? theme.primary : theme.accent;
+  const title = message.kind === "tool_call"
+    ? "Tool Call"
+    : message.kind === "tool_result"
+    ? "Tool Result"
+    : message.role === "user"
+    ? "You"
+    : "Assistant";
+  const color = message.kind === "tool_call"
+    ? theme.warning
+    : message.kind === "tool_result"
+    ? theme.secondary
+    : message.role === "user"
+    ? theme.primary
+    : theme.accent;
 
   return (
     <Box flexDirection="column" marginBottom={1}>

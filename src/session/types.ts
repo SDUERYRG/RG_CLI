@@ -11,4 +11,38 @@ export type ChatMessage = {
   role: MessageRole;
   content: string;
   includeInContext?: boolean;
+  kind?: "regular" | "tool_call" | "tool_result";
+};
+
+export type AgentMessageRole = "system" | "assistant" | "user";
+
+export type AgentTextBlock = {
+  type: "text";
+  text: string;
+};
+
+export type AgentToolUseBlock = {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+};
+
+export type AgentToolResultBlock = {
+  type: "tool_result";
+  toolUseId: string;
+  content: string;
+  isError?: boolean;
+};
+
+export type AgentContentBlock =
+  | AgentTextBlock
+  | AgentToolUseBlock
+  | AgentToolResultBlock;
+
+export type AgentMessageContent = string | AgentContentBlock[];
+
+export type AgentMessage = {
+  role: AgentMessageRole;
+  content: AgentMessageContent;
 };

@@ -6,6 +6,9 @@
  */
 import type { AppConfig } from "../config/defaults.ts";
 import type {
+  AgentConversationMessage,
+  GenerateAssistantTurnParams,
+  GenerateAssistantTurnResult,
   GenerateTextParams,
   GenerateTextResult,
   LlmClient,
@@ -18,6 +21,24 @@ function buildUrl(baseUrl: string, path: string): string {
     : baseUrl;
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   return `${normalizedBaseUrl}${normalizedPath}`;
+}
+
+function buildOpenAIPathCandidates(
+  baseUrl: string,
+  endpoint: "responses" | "chat/completions",
+): string[] {
+  const normalizedBaseUrl = baseUrl.endsWith("/")
+    ? baseUrl.slice(0, -1)
+    : baseUrl;
+
+  if (normalizedBaseUrl.endsWith("/v1")) {
+    return [buildUrl(normalizedBaseUrl, `/${endpoint}`)];
+  }
+
+  return [
+    buildUrl(normalizedBaseUrl, `/v1/${endpoint}`),
+    buildUrl(normalizedBaseUrl, `/${endpoint}`),
+  ];
 }
 
 function createRequestHeaders(config: AppConfig): Record<string, string> {
@@ -55,6 +76,84 @@ function getErrorMessageFromPayload(payload: unknown): string | null {
 
   const error = (payload as { error?: { message?: string } }).error;
   return typeof error?.message === "string" ? error.message : null;
+}
+
+function isHtmlPayload(payload: unknown): payload is string {
+  if (typeof payload !== "string") {
+    return false;
+  }
+
+  const normalized = payload.trim().toLowerCase();
+  return normalized.startsWith("<!doctype html") || normalized.startsWith("<html");
+}
+
+function assertNotHtmlPayload(
+  payload: unknown,
+  baseUrl: string,
+  apiName: string,
+): void {
+  if (!isHtmlPayload(payload)) {
+    return;
+  }
+
+  throw new Error(
+    `${apiName} 返回了 HTML 页面而不是 JSON。当前 llm.baseUrl 很可能指向了网站首页，而不是 OpenAI-compatible API 根地址：${baseUrl}`,
+  );
+}
+
+async function fetchOpenAICompatibleJson(
+  config: AppConfig,
+  endpoint: "responses" | "chat/completions",
+  body: Record<string, unknown>,
+  apiName: string,
+  signal?: AbortSignal,
+): Promise<{
+  payload: unknown;
+  response: Response;
+}> {
+  const candidates = buildOpenAIPathCandidates(config.llmBaseUrl, endpoint);
+  let lastResponse: Response | null = null;
+  let lastPayload: unknown = null;
+  let lastError: Error | null = null;
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const url = candidates[index]!;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: createRequestHeaders(config),
+      body: JSON.stringify(body),
+      signal: signal ?? AbortSignal.timeout(config.llmTimeoutMs),
+    });
+
+    const payload = await parseJsonSafely(response);
+    if (config.debug) {
+      console.error(`[RG_CLI][debug][openaiCompatible.${apiName}]`, JSON.stringify({
+        url,
+        payload,
+      }, null, 2));
+    }
+
+    if (isHtmlPayload(payload)) {
+      lastResponse = response;
+      lastPayload = payload;
+      lastError = new Error(
+        `${apiName} 从 ${url} 返回了 HTML 页面而不是 JSON。`,
+      );
+      continue;
+    }
+
+    return { payload, response };
+  }
+
+  if (lastError) {
+    throw new Error(
+      `${lastError.message} 当前 llm.baseUrl 很可能指向了网站首页，而不是 OpenAI-compatible API 根地址：${config.llmBaseUrl}`,
+    );
+  }
+
+  throw new Error(
+    `${apiName} 请求失败：无法从 ${config.llmBaseUrl} 解析出有效 JSON 响应。`,
+  );
 }
 
 function extractTextFromResponsesPayload(payload: unknown): string | null {
@@ -130,6 +229,164 @@ function extractTextFromChatCompletionsPayload(payload: unknown): string | null 
   return null;
 }
 
+function toOpenAIChatMessages(messages: AgentConversationMessage[]): Array<Record<string, unknown>> {
+  const result: Array<Record<string, unknown>> = [];
+
+  for (const message of messages) {
+    if (typeof message.content === "string") {
+      result.push({
+        role: message.role,
+        content: message.content,
+      });
+      continue;
+    }
+
+    if (message.role === "user") {
+      const textBlocks = message.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .filter(Boolean);
+
+      if (textBlocks.length > 0) {
+        result.push({
+          role: "user",
+          content: textBlocks.join("\n"),
+        });
+      }
+
+      for (const block of message.content) {
+        if (block.type !== "tool_result") {
+          continue;
+        }
+
+        result.push({
+          role: "tool",
+          tool_call_id: block.toolUseId,
+          content: block.content,
+        });
+      }
+
+      continue;
+    }
+
+    if (message.role === "assistant") {
+      const textBlocks = message.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .filter(Boolean);
+      const toolCalls = message.content
+        .filter((block) => block.type === "tool_use")
+        .map((block) => ({
+          id: block.id,
+          type: "function",
+          function: {
+            name: block.name,
+            arguments: JSON.stringify(block.input),
+          },
+        }));
+
+      result.push({
+        role: "assistant",
+        content: textBlocks.length > 0 ? textBlocks.join("\n") : null,
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      });
+      continue;
+    }
+
+    const systemText = message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .filter(Boolean)
+      .join("\n");
+
+    result.push({
+      role: "system",
+      content: systemText,
+    });
+  }
+
+  return result;
+}
+
+function extractAssistantBlocksFromChatCompletionsPayload(
+  payload: unknown,
+): GenerateAssistantTurnResult["blocks"] {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const response = payload as {
+    choices?: Array<{
+      message?: {
+        content?: string | Array<{ text?: string }>;
+        tool_calls?: Array<{
+          id?: string;
+          function?: {
+            name?: string;
+            arguments?: string;
+          };
+        }>;
+      };
+    }>;
+  };
+
+  const message = response.choices?.[0]?.message;
+  if (!message) {
+    return [];
+  }
+
+  const blocks: GenerateAssistantTurnResult["blocks"] = [];
+
+  if (typeof message.content === "string" && message.content.trim()) {
+    blocks.push({
+      type: "text",
+      text: message.content.trim(),
+    });
+  } else if (Array.isArray(message.content)) {
+    const merged = message.content
+      .map((item) => typeof item?.text === "string" ? item.text.trim() : "")
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    if (merged) {
+      blocks.push({
+        type: "text",
+        text: merged,
+      });
+    }
+  }
+
+  for (const toolCall of message.tool_calls ?? []) {
+    if (
+      typeof toolCall?.id !== "string" ||
+      typeof toolCall?.function?.name !== "string"
+    ) {
+      continue;
+    }
+
+    let input: Record<string, unknown> = {};
+    if (typeof toolCall.function.arguments === "string" && toolCall.function.arguments.trim()) {
+      try {
+        const parsed = JSON.parse(toolCall.function.arguments);
+        if (parsed && typeof parsed === "object") {
+          input = parsed as Record<string, unknown>;
+        }
+      } catch {
+        input = {};
+      }
+    }
+
+    blocks.push({
+      type: "tool_use",
+      id: toolCall.id,
+      name: toolCall.function.name,
+      input,
+    });
+  }
+
+  return blocks;
+}
+
 function normalizeConversationMessages(messages: LlmMessage[]): LlmMessage[] {
   return messages.filter((message) => message.content.trim().length > 0);
 }
@@ -150,18 +407,16 @@ async function callResponsesApi(
   params: GenerateTextParams,
 ): Promise<GenerateTextResult> {
   const messages = normalizeConversationMessages(params.messages);
-
-  const response = await fetch(buildUrl(config.llmBaseUrl, "/responses"), {
-    method: "POST",
-    headers: createRequestHeaders(config),
-    body: JSON.stringify({
+  const { response, payload } = await fetchOpenAICompatibleJson(
+    config,
+    "responses",
+    {
       model: params.model,
       input: buildResponsesPrompt(messages),
-    }),
-    signal: params.signal ?? AbortSignal.timeout(config.llmTimeoutMs),
-  });
-
-  const payload = await parseJsonSafely(response);
+    },
+    "responses",
+    params.signal,
+  );
 
   if (!response.ok) {
     const apiMessage = getErrorMessageFromPayload(payload);
@@ -185,21 +440,16 @@ async function callChatCompletionsApi(
   params: GenerateTextParams,
 ): Promise<GenerateTextResult> {
   const messages = normalizeConversationMessages(params.messages);
-
-  const response = await fetch(
-    buildUrl(config.llmBaseUrl, "/chat/completions"),
+  const { response, payload } = await fetchOpenAICompatibleJson(
+    config,
+    "chat/completions",
     {
-      method: "POST",
-      headers: createRequestHeaders(config),
-      body: JSON.stringify({
-        model: params.model,
-        messages,
-      }),
-      signal: params.signal ?? AbortSignal.timeout(config.llmTimeoutMs),
+      model: params.model,
+      messages,
     },
+    "chat.completions",
+    params.signal,
   );
-
-  const payload = await parseJsonSafely(response);
 
   if (!response.ok) {
     const apiMessage = getErrorMessageFromPayload(payload);
@@ -234,6 +484,43 @@ export function createOpenAICompatibleClient(config: AppConfig): LlmClient {
       throw new Error(
         `OpenAI-compatible provider 不支持当前 wireApi：${config.llmWireApi}`,
       );
+    },
+    async generateAssistantTurn(
+      params: GenerateAssistantTurnParams,
+    ): Promise<GenerateAssistantTurnResult> {
+      const { response, payload } = await fetchOpenAICompatibleJson(
+        config,
+        "chat/completions",
+        {
+          model: params.model,
+          messages: toOpenAIChatMessages(params.messages),
+          tools: params.tools.map((tool) => ({
+            type: "function",
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.inputSchema,
+            },
+          })),
+          tool_choice: params.toolChoice === "required" ? "required" : "auto",
+        },
+        "generateAssistantTurn",
+        params.signal,
+      );
+
+      if (!response.ok) {
+        const apiMessage = getErrorMessageFromPayload(payload);
+        throw new Error(
+          apiMessage
+            ? `OpenAI-compatible tools 请求失败：${apiMessage}`
+            : `OpenAI-compatible tools 请求失败：HTTP ${response.status}`,
+        );
+      }
+
+      return {
+        blocks: extractAssistantBlocksFromChatCompletionsPayload(payload),
+        raw: payload,
+      };
     },
   };
 }

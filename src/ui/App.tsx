@@ -5,7 +5,6 @@
  * 说明：页面状态集中在这里管理，具体展示拆给子组件处理。
  */
 import type { AppConfig } from "../config/defaults.ts";
-import { createLlmClient } from "../llm/createClient.ts";
 import { executeSlashCommand } from "../session/slashCommands.ts";
 import React, { useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
@@ -21,6 +20,7 @@ import {
   getChatSessionDisplaySummary,
   getChatSessionDisplayTitle,
   getWelcomeMessage,
+  QueryEngine,
   saveAiSessionTitleIfNoCustomTitle,
   saveSessionSnapshot,
   syncMessageIdSequence,
@@ -28,7 +28,6 @@ import {
   updateChatSessionMessages,
 } from "../session/index.ts";
 import type { PersistedChatSession } from "../session/index.ts";
-import type { LlmMessage } from "../llm/types.ts";
 import { getCwd } from "../shared/cwd.ts";
 
 type AppProps = {
@@ -44,6 +43,7 @@ export function App({ config }: AppProps) {
   );
   const [isLoading, setIsLoading] = useState(false);
   const titleGenerationInFlight = useRef(new Set<string>());
+  const queryEngineRef = useRef(new QueryEngine({ config }));
   const messages = activeSession.messages;
   const sessionTitle = getChatSessionDisplayTitle(activeSession);
   const sessionSummary = getChatSessionDisplaySummary(activeSession);
@@ -189,47 +189,30 @@ export function App({ config }: AppProps) {
       return;
     }
 
-    const userMessage = createMessage("user", nextValue);
-    const sessionAfterUserMessage = updateChatSessionMessages(activeSession, [
-      ...messages,
-      userMessage,
-    ]);
-    const contextMessages: LlmMessage[] = sessionAfterUserMessage.messages
-      .filter((message) => message.includeInContext !== false)
-      .map((message) => ({
-        role: message.role,
-        content: message.content,
-      }));
-
-    setActiveSession(sessionAfterUserMessage);
     setQuery("");
     setIsLoading(true);
-    await persistSession(sessionAfterUserMessage);
 
     try {
-      const client = createLlmClient(config);
-      const result = await client.generateText({
-        model: config.model,
-        messages: contextMessages,
-      });
-
-      const sessionAfterAssistantReply = updateChatSessionMessages(
-        sessionAfterUserMessage,
-        [
-          ...sessionAfterUserMessage.messages,
-          createAssistantReply(result.text),
-        ],
-      );
-
-      setActiveSession(sessionAfterAssistantReply);
-      await persistSession(sessionAfterAssistantReply);
+      let sessionAfterAssistantReply = activeSession;
+      for await (const sessionUpdate of queryEngineRef.current.submitMessage(
+        activeSession,
+        nextValue,
+      )) {
+        sessionAfterAssistantReply = sessionUpdate;
+        setActiveSession(sessionUpdate);
+        void persistSession(sessionUpdate);
+      }
       maybeGenerateAiTitle(sessionAfterAssistantReply);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const fallbackUserMessage = updateChatSessionMessages(activeSession, [
+        ...messages,
+        createMessage("user", nextValue),
+      ]);
       const sessionAfterFailureReply = updateChatSessionMessages(
-        sessionAfterUserMessage,
+        fallbackUserMessage,
         [
-          ...sessionAfterUserMessage.messages,
+          ...fallbackUserMessage.messages,
           createAssistantReply(`模型请求失败：${message}`, {
             includeInContext: false,
           }),

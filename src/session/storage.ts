@@ -19,19 +19,20 @@ import {
 import { writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { getRgCliConfigHomeDir } from "../utils/envUtils.ts";
-import type { ChatMessage } from "./types.ts";
+import type { AgentMessage, ChatMessage } from "./types.ts";
 
 const SESSION_FILE_SUFFIX = ".json";
 const MAX_TITLE_LENGTH = 36;
 const MAX_SUMMARY_LENGTH = 96;
 
 export type PersistedChatSession = {
-  version: 2;
+  version: 3;
   id: string;
   cwd: string;
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
+  agentMessages: AgentMessage[];
   customTitle?: string;
   aiTitle?: string;
   firstPrompt?: string;
@@ -55,12 +56,13 @@ type LiteSessionFile = {
 };
 
 type LegacyPersistedChatSession = {
-  version?: 1 | 2;
+  version?: 1 | 2 | 3;
   id: string;
   cwd: string;
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
+  agentMessages?: AgentMessage[];
   customTitle?: string;
   generatedTitle?: string;
   aiTitle?: string;
@@ -100,7 +102,7 @@ export function createChatSession(
   const now = new Date().toISOString();
 
   return withDerivedSessionMetadata({
-    version: 2,
+    version: 3,
     id: randomUUID(),
     cwd,
     createdAt: now,
@@ -137,6 +139,17 @@ function ensureProjectDirExists(cwd: string): void {
 
 function isPersistableSession(session: PersistedChatSession): boolean {
   return session.messages.some((message) => message.role === "user");
+}
+
+function deriveAgentMessagesFromChatMessages(
+  messages: ChatMessage[],
+): AgentMessage[] {
+  return messages
+    .filter((message) => message.includeInContext !== false && message.content.trim())
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
 }
 
 function readSessionFile(filePath: string): PersistedChatSession | null {
@@ -247,10 +260,14 @@ function withDerivedSessionMetadata(
     session.sessionSummary?.trim() ||
     legacySummary?.trim() ||
     undefined;
+  const agentMessages = session.agentMessages && session.agentMessages.length > 0
+    ? session.agentMessages
+    : deriveAgentMessagesFromChatMessages(session.messages);
 
   return {
     ...rest,
-    version: 2,
+    version: 3,
+    agentMessages,
     customTitle,
     aiTitle,
     firstPrompt,
@@ -370,6 +387,17 @@ export function updateChatSessionAiTitle(
   return withDerivedSessionMetadata({
     ...session,
     aiTitle,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+export function updateChatSessionAgentMessages(
+  session: PersistedChatSession,
+  agentMessages: AgentMessage[],
+): PersistedChatSession {
+  return withDerivedSessionMetadata({
+    ...session,
+    agentMessages,
     updatedAt: new Date().toISOString(),
   });
 }

@@ -12,6 +12,43 @@ export type LlmMessage = {
   content: string;
 };
 
+export type LlmToolDefinition = {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+};
+
+export type AgentConversationMessageRole = "system" | "assistant" | "user";
+
+export type AgentConversationTextBlock = {
+  type: "text";
+  text: string;
+};
+
+export type AgentConversationToolUseBlock = {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+};
+
+export type AgentConversationToolResultBlock = {
+  type: "tool_result";
+  toolUseId: string;
+  content: string;
+  isError?: boolean;
+};
+
+export type AgentConversationContentBlock =
+  | AgentConversationTextBlock
+  | AgentConversationToolUseBlock
+  | AgentConversationToolResultBlock;
+
+export type AgentConversationMessage = {
+  role: AgentConversationMessageRole;
+  content: string | AgentConversationContentBlock[];
+};
+
 export type GenerateTextParams = {
   model: string;
   messages: LlmMessage[];
@@ -23,6 +60,25 @@ export type GenerateTextResult = {
   raw?: unknown;
 };
 
+export type GenerateAssistantTurnParams = {
+  model: string;
+  messages: AgentConversationMessage[];
+  tools: LlmToolDefinition[];
+  toolChoice?: "auto" | "required";
+  signal?: AbortSignal;
+};
+
+export type GenerateAssistantTurnResult = {
+  blocks: Array<
+    | AgentConversationTextBlock
+    | AgentConversationToolUseBlock
+  >;
+  raw?: unknown;
+};
+
 export interface LlmClient {
   generateText(params: GenerateTextParams): Promise<GenerateTextResult>;
+  generateAssistantTurn(
+    params: GenerateAssistantTurnParams,
+  ): Promise<GenerateAssistantTurnResult>;
 }

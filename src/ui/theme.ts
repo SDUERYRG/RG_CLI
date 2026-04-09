@@ -8,4 +8,5 @@ export const theme = {
   primary: "cyan",
   secondary: "gray",
   accent: "green",
+  warning: "yellow",
 } as const;

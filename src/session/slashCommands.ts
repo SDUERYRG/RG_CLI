@@ -11,6 +11,7 @@ import {
   type PersistedChatSession,
 } from "./storage.ts";
 import type { ChatMessage } from "./types.ts";
+import { getToolSummaries } from "../tools/registry.ts";
 
 export type SlashCommandResult =
   | { type: "not-a-command" }
@@ -66,7 +67,7 @@ export function executeSlashCommand(
         type: "append-messages",
         messages: [
           createLocalAssistantMessage(
-            "可用命令：/help、/clear、/new、/sessions、/resume <id>、/rename <title>、/exit",
+            "可用命令：/help、/clear、/new、/sessions、/resume <id>、/rename <title>、/tools、/exit",
           ),
         ],
       };
@@ -177,6 +178,18 @@ export function executeSlashCommand(
         messages: [
           createLocalAssistantMessage(`已将当前会话重命名为：${nextTitle}`),
         ],
+      };
+    }
+
+    case "/tools": {
+      const lines = [
+        "当前已注册工具：",
+        ...getToolSummaries().map((tool) => `- ${tool.name}: ${tool.description}`),
+      ];
+
+      return {
+        type: "append-messages",
+        messages: [createLocalAssistantMessage(lines.join("\n"))],
       };
     }
 
