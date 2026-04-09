@@ -4,7 +4,6 @@
  * 作用：维护顶层 CLI 命令注册和执行入口。
  * 说明：当前先提供板块一所需的最小结构，后续再扩展为真正的顶层命令系统。
  */
-import type { AppConfig } from "../config/defaults.ts";
 import { parseConfigOverrides } from "../config/loadConfig.ts";
 import { getCwd } from "../shared/cwd.ts";
 import { writeTerminalBlock } from "../shared/terminal.ts";
@@ -37,9 +36,26 @@ const topLevelCommands: TopLevelCommand[] = [
     name: "config",
     description: "查看当前解析后的配置",
     run: (context) => {
+      const maskedConfig = {
+        ...context.config,
+        llmApiKey: context.config.llmApiKey ? "***masked***" : undefined,
+      };
+      const warningLines = context.configLoadResult.warnings.length > 0
+        ? [
+          "",
+          "配置警告：",
+          ...context.configLoadResult.warnings.map((warning) => `- ${warning}`),
+        ]
+        : [];
+
       writeTerminalBlock([
         "当前配置：",
-        JSON.stringify(context.config, null, 2),
+        JSON.stringify(maskedConfig, null, 2),
+        "",
+        "用户配置文件：",
+        context.configLoadResult.userSettings.filePath,
+        `文件存在：${context.configLoadResult.userSettings.exists ? "是" : "否"}`,
+        ...warningLines,
         "",
         "当前激活的工作目录：",
         getCwd(),
@@ -110,7 +126,7 @@ export function getTopLevelCommand(
 
 export async function runTopLevelCommand(
   argv: string[],
-  config: AppConfig,
+  configLoadResult: CliContext["configLoadResult"],
 ): Promise<boolean> {
   const action = parseTopLevelCliAction(argv);
 
@@ -126,7 +142,8 @@ export async function runTopLevelCommand(
 
   const context: CliContext = {
     argv,
-    config,
+    config: configLoadResult.config,
+    configLoadResult,
     options: buildParsedCliOptions(argv, action),
   };
 

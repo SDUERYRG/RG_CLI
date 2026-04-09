@@ -6,10 +6,11 @@
  */
 import React from "react";
 import { render } from "ink";
+import type { AppConfig } from "../config/defaults.ts";
 import { ensureLeadingBlankLines } from "../shared/terminal.ts";
 import { App } from "./App.tsx";
 
-export async function runApp(): Promise<void> {
+export async function runApp(config: AppConfig): Promise<void> {
   ensureLeadingBlankLines();
-  render(<App />);
+  render(<App config={config} />);
 }

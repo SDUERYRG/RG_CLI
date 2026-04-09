@@ -38,7 +38,15 @@ export function resolveCliAction(argv: string[]): CliAction {
     }
 
     if (isConfigFlag(arg)) {
-      if ((arg === "--cwd" || arg === "--model") && !arg.includes("=")) {
+      if (
+        (arg === "--cwd" ||
+          arg === "--model" ||
+          arg === "--base-url" ||
+          arg === "--api-key" ||
+          arg === "--provider" ||
+          arg === "--wire-api") &&
+        !arg.includes("=")
+      ) {
         index += 1;
       }
 

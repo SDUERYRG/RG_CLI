@@ -9,11 +9,23 @@ export type AppConfig = {
   model: string;
   debug: boolean;
   color: boolean;
+  llmProvider: "anthropic-compatible" | "openai-compatible";
+  llmBaseUrl: string;
+  llmApiKey?: string;
+  llmWireApi: "messages" | "responses" | "chat.completions";
+  llmTimeoutMs: number;
+  llmHeaders: Record<string, string>;
 };
 
 export const defaultConfig: AppConfig = {
   cwd: process.cwd(),
-  model: "default",
+  model: "claude-3-5-sonnet-latest",
   debug: false,
   color: true,
+  llmProvider: "anthropic-compatible",
+  llmBaseUrl: "https://api.anthropic.com",
+  llmApiKey: undefined,
+  llmWireApi: "messages",
+  llmTimeoutMs: 60_000,
+  llmHeaders: {},
 };

@@ -8,7 +8,24 @@ import React from "react";
 import { Box, Text } from "ink";
 import { theme } from "../theme.ts";
 
-export function Footer() {
+type FooterProps = {
+  isLoading?: boolean;
+};
+
+export function Footer({ isLoading = false }: FooterProps) {
+  if (isLoading) {
+    return (
+      <Box
+        marginTop={1}
+        borderStyle="round"
+        borderColor={theme.secondary}
+        paddingX={1}
+      >
+        <Text color={theme.accent}>正在请求模型响应，请稍候...</Text>
+      </Box>
+    );
+  }
+
   return (
     <Box
       marginTop={1}

@@ -26,9 +26,9 @@ export function getWelcomeMessage(): ChatMessage {
   );
 }
 
-export function createAssistantReply(input: string): ChatMessage {
+export function createAssistantReply(content: string): ChatMessage {
   return createMessage(
     "assistant",
-    `收到你的消息：“${input}”。下一步我们可以继续接入真实指令和业务逻辑。`,
+    content,
   );
 }

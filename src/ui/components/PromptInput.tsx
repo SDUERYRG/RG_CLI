@@ -13,12 +13,14 @@ type PromptInputProps = {
   value: string;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
+  isBusy?: boolean;
 };
 
 export function PromptInput({
   value,
   onChange,
   onSubmit,
+  isBusy = false,
 }: PromptInputProps) {
   return (
     <Box
@@ -36,7 +38,7 @@ export function PromptInput({
         value={value}
         onChange={onChange}
         onSubmit={onSubmit}
-        placeholder="输入消息并按 Enter 发送..."
+        placeholder={isBusy ? "模型处理中，请稍候..." : "输入消息并按 Enter 发送..."}
       />
     </Box>
   );

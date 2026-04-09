@@ -5,10 +5,11 @@
  * 作用：作为 CLI 主入口，负责分发快捷参数入口和交互式界面启动流程。
  * 说明：这里控制启动顺序，不承载具体输出和界面细节。
  */
-import { loadConfig } from "./config/loadConfig.ts";
+import { loadConfigResult } from "./config/loadConfig.ts";
 import { runTopLevelCommand } from "./cli/commands.ts";
 import { resolveCliAction } from "./cli/args.ts";
 import {
+  printConfigWarnings,
   printInvalidOption,
   printNonInteractiveNotice,
   printUnexpectedError,
@@ -21,7 +22,10 @@ export async function startCli(
   argv: string[] = process.argv.slice(2),
 ): Promise<void> {
   const action = resolveCliAction(argv);
-  const config = loadConfig(argv);
+  const configLoadResult = loadConfigResult(argv);
+  const config = configLoadResult.config;
+
+  printConfigWarnings(configLoadResult.warnings);
 
   if (action.type === "shortcut") {
     runShortcut(action.command);
@@ -42,7 +46,7 @@ export async function startCli(
     setCwd(config.cwd);
   }
 
-  const handled = await runTopLevelCommand(argv, config);
+  const handled = await runTopLevelCommand(argv, configLoadResult);
 
   if (handled) {
     return;
@@ -54,7 +58,7 @@ export async function startCli(
   }
 
   const { runApp } = await import("./ui/run.tsx");
-  await runApp();
+  await runApp(config);
 }
 
 

@@ -5,6 +5,7 @@
  * 说明：这些类型会被参数解析、顶层命令和入口调度共同使用，避免定义分散。
  */
 import type { AppConfig } from "../config/defaults.ts";
+import type { ConfigLoadResult } from "../config/types.ts";
 
 export type ShortcutCommand = "help" | "version";
 
@@ -48,5 +49,6 @@ export type ParsedCliOptions = {
 export type CliContext = {
   argv: string[];
   config: AppConfig;
+  configLoadResult: ConfigLoadResult;
   options: ParsedCliOptions;
 };

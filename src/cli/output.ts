@@ -37,6 +37,10 @@ function getHelpLines(): string[] {
     "  --debug          启用调试模式",
     "  --cwd <path>     指定启动工作目录",
     "  --model <name>   指定模型名称",
+    "  --base-url <url> 指定模型服务地址",
+    "  --api-key <key>  指定模型服务密钥",
+    "  --provider <id>  指定提供商（anthropic-compatible/openai-compatible）",
+    "  --wire-api <id>  指定协议（messages/responses/chat.completions）",
     "",
     "版本:",
     `  ${APP_PACKAGE_NAME}@${APP_VERSION}`,
@@ -70,6 +74,17 @@ function getErrorLines(error: unknown): string[] {
   }
 
   return [String(error)];
+}
+
+export function printConfigWarnings(warnings: string[]): void {
+  if (warnings.length === 0) {
+    return;
+  }
+
+  writeTerminalBlock(
+    ["检测到用户配置问题，已回退到默认配置或其他覆盖项：", ...warnings.map((warning) => `- ${warning}`)],
+    process.stderr,
+  );
 }
 
 export function printUnexpectedError(error: unknown): void {
