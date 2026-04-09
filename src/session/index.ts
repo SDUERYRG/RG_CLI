@@ -8,5 +8,28 @@ export {
   createAssistantReply,
   createMessage,
   getWelcomeMessage,
+  syncMessageIdSequence,
 } from "./messages.ts";
 export type { ChatMessage, MessageRole } from "./types.ts";
+export {
+  createChatSession,
+  getChatSessionDisplaySummary,
+  getChatSessionDisplayTitle,
+  listPersistedSessions,
+  loadMostRecentSession,
+  loadSessionById,
+  resolveSession,
+  saveAiSessionTitleIfNoCustomTitle,
+  saveSessionSnapshot,
+  updateChatSessionAiTitle,
+  updateChatSessionCustomTitle,
+  updateChatSessionMessages,
+} from "./storage.ts";
+export {
+  extractConversationText,
+  generateSessionAiTitle,
+} from "./sessionTitle.ts";
+export type {
+  ChatSessionSummary,
+  PersistedChatSession,
+} from "./storage.ts";

@@ -10,4 +10,5 @@ export type ChatMessage = {
   id: number;
   role: MessageRole;
   content: string;
+  includeInContext?: boolean;
 };

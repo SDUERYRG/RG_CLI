@@ -5,9 +5,17 @@
  * 说明：先抽出统一接口，后续扩展更多 provider 时可以保持 UI 层稳定。
  */
 
+export type LlmMessageRole = "system" | "assistant" | "user";
+
+export type LlmMessage = {
+  role: LlmMessageRole;
+  content: string;
+};
+
 export type GenerateTextParams = {
   model: string;
-  prompt: string;
+  messages: LlmMessage[];
+  signal?: AbortSignal;
 };
 
 export type GenerateTextResult = {

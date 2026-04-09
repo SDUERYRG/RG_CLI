@@ -7,18 +7,29 @@
 import type { AppConfig } from "../config/defaults.ts";
 import { createLlmClient } from "../llm/createClient.ts";
 import { executeSlashCommand } from "../session/slashCommands.ts";
-import React, { useState } from "react";
-import { Box, useApp, useInput } from "ink";
+import React, { useRef, useState } from "react";
+import { Box, Text, useApp, useInput } from "ink";
 import { Footer } from "./components/Footer.tsx";
 import { Header } from "./components/Header.tsx";
 import { MessageList } from "./components/MessageList.tsx";
 import { PromptInput } from "./components/PromptInput.tsx";
 import {
   createAssistantReply,
+  createChatSession,
   createMessage,
+  generateSessionAiTitle,
+  getChatSessionDisplaySummary,
+  getChatSessionDisplayTitle,
   getWelcomeMessage,
+  saveAiSessionTitleIfNoCustomTitle,
+  saveSessionSnapshot,
+  syncMessageIdSequence,
+  updateChatSessionCustomTitle,
+  updateChatSessionMessages,
 } from "../session/index.ts";
-import type { ChatMessage } from "../session/index.ts";
+import type { PersistedChatSession } from "../session/index.ts";
+import type { LlmMessage } from "../llm/types.ts";
+import { getCwd } from "../shared/cwd.ts";
 
 type AppProps = {
   config: AppConfig;
@@ -26,11 +37,34 @@ type AppProps = {
 
 export function App({ config }: AppProps) {
   const { exit } = useApp();
+  const cwd = getCwd();
   const [query, setQuery] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>(() => [
-    getWelcomeMessage(),
-  ]);
+  const [activeSession, setActiveSession] = useState<PersistedChatSession>(() =>
+    createChatSession(cwd, [getWelcomeMessage()])
+  );
   const [isLoading, setIsLoading] = useState(false);
+  const titleGenerationInFlight = useRef(new Set<string>());
+  const messages = activeSession.messages;
+  const sessionTitle = getChatSessionDisplayTitle(activeSession);
+  const sessionSummary = getChatSessionDisplaySummary(activeSession);
+
+  async function persistSession(session: PersistedChatSession): Promise<void> {
+    try {
+      await saveSessionSnapshot(session);
+    } catch {
+      // 持久化失败不阻断当前聊天流程；后续可以再补专门的错误提示。
+    }
+  }
+
+  function createFreshSession(): PersistedChatSession {
+    return createChatSession(cwd, [getWelcomeMessage()]);
+  }
+
+  function replaceActiveSession(session: PersistedChatSession): void {
+    syncMessageIdSequence(session.messages);
+    setActiveSession(session);
+    setQuery("");
+  }
 
   useInput((input, key) => {
     const wantsToExit = (query.length === 0 && input.toLowerCase() === "q") ||
@@ -41,6 +75,66 @@ export function App({ config }: AppProps) {
     }
   });
 
+  function maybeGenerateAiTitle(session: PersistedChatSession): void {
+    const contextualMessages = session.messages.filter((message) =>
+      message.includeInContext !== false
+    );
+    const userCount = contextualMessages.filter((message) =>
+      message.role === "user"
+    ).length;
+    const assistantCount = contextualMessages.filter((message) =>
+      message.role === "assistant"
+    ).length;
+
+    if (session.customTitle?.trim() || session.aiTitle?.trim()) {
+      return;
+    }
+
+    if (userCount !== 1 || assistantCount !== 1) {
+      return;
+    }
+
+    if (titleGenerationInFlight.current.has(session.id)) {
+      return;
+    }
+
+    titleGenerationInFlight.current.add(session.id);
+
+    void (async () => {
+      try {
+        const signal = AbortSignal.timeout(15_000);
+        const generatedTitle = await generateSessionAiTitle(config, session, signal);
+
+        if (!generatedTitle) {
+          return;
+        }
+
+        const updatedSession = await saveAiSessionTitleIfNoCustomTitle(
+          session.cwd,
+          session.id,
+          generatedTitle,
+        );
+
+        if (!updatedSession) {
+          return;
+        }
+
+        syncMessageIdSequence(updatedSession.messages);
+        setActiveSession((currentSession) => {
+          if (currentSession.id !== updatedSession.id || currentSession.customTitle?.trim()) {
+            return currentSession;
+          }
+
+          return updatedSession;
+        });
+      } catch {
+        // AI 标题生成失败不影响主对话流程
+      } finally {
+        titleGenerationInFlight.current.delete(session.id);
+      }
+    })();
+  }
+
   async function submitUserMessage(value: string) {
     const nextValue = value.trim();
 
@@ -48,18 +142,43 @@ export function App({ config }: AppProps) {
       return;
     }
 
-    const slashResult = executeSlashCommand(nextValue);
+    const slashResult = executeSlashCommand(nextValue, {
+      cwd,
+      activeSessionId: activeSession.id,
+    });
 
     if (slashResult.type !== "not-a-command") {
       if (slashResult.type === "append-messages") {
-        setMessages((currentMessages) => [
-          ...currentMessages,
-          ...slashResult.messages,
-        ]);
+        setActiveSession((currentSession) =>
+          updateChatSessionMessages(currentSession, [
+            ...currentSession.messages,
+            ...slashResult.messages,
+          ])
+        );
       }
 
       if (slashResult.type === "replace-messages") {
-        setMessages(slashResult.messages);
+        setActiveSession((currentSession) =>
+          updateChatSessionMessages(currentSession, slashResult.messages)
+        );
+      }
+
+      if (slashResult.type === "start-new-session") {
+        replaceActiveSession(createFreshSession());
+      }
+
+      if (slashResult.type === "load-session") {
+        replaceActiveSession(slashResult.session);
+      }
+
+      if (slashResult.type === "rename-session") {
+        const renamedSession = updateChatSessionCustomTitle(activeSession, slashResult.title);
+        const renamedSessionWithAck = updateChatSessionMessages(renamedSession, [
+          ...renamedSession.messages,
+          ...slashResult.messages,
+        ]);
+        setActiveSession(renamedSessionWithAck);
+        await persistSession(renamedSessionWithAck);
       }
 
       if (slashResult.type === "exit") {
@@ -71,30 +190,54 @@ export function App({ config }: AppProps) {
     }
 
     const userMessage = createMessage("user", nextValue);
-    setMessages((currentMessages) => [
-      ...currentMessages,
+    const sessionAfterUserMessage = updateChatSessionMessages(activeSession, [
+      ...messages,
       userMessage,
     ]);
+    const contextMessages: LlmMessage[] = sessionAfterUserMessage.messages
+      .filter((message) => message.includeInContext !== false)
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+      }));
+
+    setActiveSession(sessionAfterUserMessage);
     setQuery("");
     setIsLoading(true);
+    await persistSession(sessionAfterUserMessage);
 
     try {
       const client = createLlmClient(config);
       const result = await client.generateText({
         model: config.model,
-        prompt: nextValue,
+        messages: contextMessages,
       });
 
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        createAssistantReply(result.text),
-      ]);
+      const sessionAfterAssistantReply = updateChatSessionMessages(
+        sessionAfterUserMessage,
+        [
+          ...sessionAfterUserMessage.messages,
+          createAssistantReply(result.text),
+        ],
+      );
+
+      setActiveSession(sessionAfterAssistantReply);
+      await persistSession(sessionAfterAssistantReply);
+      maybeGenerateAiTitle(sessionAfterAssistantReply);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        createAssistantReply(`模型请求失败：${message}`),
-      ]);
+      const sessionAfterFailureReply = updateChatSessionMessages(
+        sessionAfterUserMessage,
+        [
+          ...sessionAfterUserMessage.messages,
+          createAssistantReply(`模型请求失败：${message}`, {
+            includeInContext: false,
+          }),
+        ],
+      );
+
+      setActiveSession(sessionAfterFailureReply);
+      await persistSession(sessionAfterFailureReply);
     } finally {
       setIsLoading(false);
     }
@@ -108,6 +251,10 @@ export function App({ config }: AppProps) {
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
       <Header />
+      <Box flexDirection="column" marginBottom={1}>
+        <Text bold>当前会话：{sessionTitle}</Text>
+        <Text dimColor>摘要：{sessionSummary}</Text>
+      </Box>
       <MessageList messages={messages} />
       <PromptInput
         value={query}

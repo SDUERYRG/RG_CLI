@@ -8,27 +8,46 @@ import type { ChatMessage } from "./types.ts";
 
 let nextMessageId = 1;
 
+type CreateMessageOptions = {
+  includeInContext?: boolean;
+};
+
 export function createMessage(
   role: ChatMessage["role"],
   content: string,
+  options: CreateMessageOptions = {},
 ): ChatMessage {
   return {
     id: nextMessageId++,
     role,
     content,
+    includeInContext: options.includeInContext,
   };
+}
+
+export function syncMessageIdSequence(messages: ChatMessage[]): void {
+  const maxMessageId = messages.reduce((max, message) => {
+    return Math.max(max, message.id);
+  }, 0);
+
+  nextMessageId = Math.max(nextMessageId, maxMessageId + 1);
 }
 
 export function getWelcomeMessage(): ChatMessage {
   return createMessage(
     "assistant",
     "你好，我是 RG CLI 助手。你可以先输入一条消息试试看。",
+    { includeInContext: false },
   );
 }
 
-export function createAssistantReply(content: string): ChatMessage {
+export function createAssistantReply(
+  content: string,
+  options: CreateMessageOptions = {},
+): ChatMessage {
   return createMessage(
     "assistant",
     content,
+    options,
   );
 }

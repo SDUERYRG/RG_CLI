@@ -5,7 +5,12 @@
  * 说明：当前只实现 messages API，用于兼容默认 provider。
  */
 import type { AppConfig } from "../config/defaults.ts";
-import type { GenerateTextParams, GenerateTextResult, LlmClient } from "./types.ts";
+import type {
+  GenerateTextParams,
+  GenerateTextResult,
+  LlmClient,
+  LlmMessage,
+} from "./types.ts";
 
 function buildUrl(baseUrl: string, path: string): string {
   const normalizedBaseUrl = baseUrl.endsWith("/")
@@ -74,6 +79,38 @@ function extractTextFromMessagesPayload(payload: unknown): string | null {
   return chunks.length > 0 ? chunks.join("\n") : null;
 }
 
+function splitAnthropicMessages(messages: LlmMessage[]): {
+  system?: string;
+  conversation: Array<{ role: "assistant" | "user"; content: string }>;
+} {
+  const systemChunks: string[] = [];
+  const conversation: Array<{ role: "assistant" | "user"; content: string }> =
+    [];
+
+  for (const message of messages) {
+    const content = message.content.trim();
+
+    if (!content) {
+      continue;
+    }
+
+    if (message.role === "system") {
+      systemChunks.push(content);
+      continue;
+    }
+
+    conversation.push({
+      role: message.role,
+      content,
+    });
+  }
+
+  return {
+    system: systemChunks.length > 0 ? systemChunks.join("\n\n") : undefined,
+    conversation,
+  };
+}
+
 export function createAnthropicCompatibleClient(config: AppConfig): LlmClient {
   return {
     async generateText(params: GenerateTextParams): Promise<GenerateTextResult> {
@@ -83,20 +120,22 @@ export function createAnthropicCompatibleClient(config: AppConfig): LlmClient {
         );
       }
 
+      const { system, conversation } = splitAnthropicMessages(params.messages);
+
+      if (conversation.length === 0) {
+        throw new Error("当前没有可发送给模型的会话消息。");
+      }
+
       const response = await fetch(buildUrl(config.llmBaseUrl, "/v1/messages"), {
         method: "POST",
         headers: createRequestHeaders(config),
         body: JSON.stringify({
           model: params.model,
           max_tokens: 2048,
-          messages: [
-            {
-              role: "user",
-              content: params.prompt,
-            },
-          ],
+          ...(system ? { system } : {}),
+          messages: conversation,
         }),
-        signal: AbortSignal.timeout(config.llmTimeoutMs),
+        signal: params.signal ?? AbortSignal.timeout(config.llmTimeoutMs),
       });
 
       const payload = await parseJsonSafely(response);

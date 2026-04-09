@@ -5,7 +5,12 @@
  * 说明：支持 responses 和 chat.completions 两种 wire API。
  */
 import type { AppConfig } from "../config/defaults.ts";
-import type { GenerateTextParams, GenerateTextResult, LlmClient } from "./types.ts";
+import type {
+  GenerateTextParams,
+  GenerateTextResult,
+  LlmClient,
+  LlmMessage,
+} from "./types.ts";
 
 function buildUrl(baseUrl: string, path: string): string {
   const normalizedBaseUrl = baseUrl.endsWith("/")
@@ -125,18 +130,35 @@ function extractTextFromChatCompletionsPayload(payload: unknown): string | null 
   return null;
 }
 
+function normalizeConversationMessages(messages: LlmMessage[]): LlmMessage[] {
+  return messages.filter((message) => message.content.trim().length > 0);
+}
+
+function buildResponsesPrompt(messages: LlmMessage[]): string {
+  return messages.map((message) => {
+    const label = message.role === "user"
+      ? "User"
+      : message.role === "assistant"
+      ? "Assistant"
+      : "System";
+    return `${label}:\n${message.content}`;
+  }).join("\n\n");
+}
+
 async function callResponsesApi(
   config: AppConfig,
   params: GenerateTextParams,
 ): Promise<GenerateTextResult> {
+  const messages = normalizeConversationMessages(params.messages);
+
   const response = await fetch(buildUrl(config.llmBaseUrl, "/responses"), {
     method: "POST",
     headers: createRequestHeaders(config),
     body: JSON.stringify({
       model: params.model,
-      input: params.prompt,
+      input: buildResponsesPrompt(messages),
     }),
-    signal: AbortSignal.timeout(config.llmTimeoutMs),
+    signal: params.signal ?? AbortSignal.timeout(config.llmTimeoutMs),
   });
 
   const payload = await parseJsonSafely(response);
@@ -162,6 +184,8 @@ async function callChatCompletionsApi(
   config: AppConfig,
   params: GenerateTextParams,
 ): Promise<GenerateTextResult> {
+  const messages = normalizeConversationMessages(params.messages);
+
   const response = await fetch(
     buildUrl(config.llmBaseUrl, "/chat/completions"),
     {
@@ -169,14 +193,9 @@ async function callChatCompletionsApi(
       headers: createRequestHeaders(config),
       body: JSON.stringify({
         model: params.model,
-        messages: [
-          {
-            role: "user",
-            content: params.prompt,
-          },
-        ],
+        messages,
       }),
-      signal: AbortSignal.timeout(config.llmTimeoutMs),
+      signal: params.signal ?? AbortSignal.timeout(config.llmTimeoutMs),
     },
   );
 
