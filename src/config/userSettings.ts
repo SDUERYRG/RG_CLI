@@ -159,6 +159,14 @@ export function mapUserSettingsToConfigOverrides(
     overrides.llmWireApi = settings.llm.wireApi;
   }
 
+  if (settings.llm?.reasoningEffort !== undefined) {
+    overrides.llmReasoningEffort = settings.llm.reasoningEffort;
+  }
+
+  if (settings.llm?.reasoningSummary !== undefined) {
+    overrides.llmReasoningSummary = settings.llm.reasoningSummary;
+  }
+
   if (settings.llm?.model !== undefined) {
     overrides.model = settings.llm.model;
   }

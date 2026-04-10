@@ -6,6 +6,7 @@
  */
 import type { AppConfig } from "../config/defaults.ts";
 import type {
+  AssistantTurnStreamEvent,
   AgentConversationMessage,
   GenerateAssistantTurnParams,
   GenerateAssistantTurnResult,
@@ -14,6 +15,7 @@ import type {
   LlmClient,
   LlmMessage,
 } from "./types.ts";
+import { streamOpenAIResponsesAssistantTurn } from "./openaiResponsesStream.ts";
 
 function buildUrl(baseUrl: string, path: string): string {
   const normalizedBaseUrl = baseUrl.endsWith("/")
@@ -87,6 +89,48 @@ function isHtmlPayload(payload: unknown): payload is string {
   return normalized.startsWith("<!doctype html") || normalized.startsWith("<html");
 }
 
+function truncateText(text: string, maxLength = 1_200): string {
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength).trim()}\n...[truncated]`;
+}
+
+function stringifyValueForError(value: unknown, maxLength = 4_000): string {
+  let text = "";
+
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  } catch {
+    text = String(value);
+  }
+
+  return truncateText(text, maxLength);
+}
+
+function buildHtmlPayloadErrorMessage(options: {
+  apiName: string;
+  url: string;
+  body: Record<string, unknown>;
+  payload: string;
+  response: Response;
+  includeRequestBody: boolean;
+}): string {
+  const lines = [
+    `${options.apiName} 从 ${options.url} 返回了 HTML 页面而不是 JSON。`,
+    `HTTP ${options.response.status} ${options.response.statusText || ""}`.trim(),
+    `content-type: ${options.response.headers.get("content-type") ?? "(missing)"}`,
+  ];
+
+  if (options.includeRequestBody) {
+    lines.push(`request body:\n${stringifyValueForError(options.body)}`);
+  }
+
+  lines.push(`response snippet:\n${truncateText(options.payload)}`);
+  return lines.join("\n");
+}
+
 function assertNotHtmlPayload(
   payload: unknown,
   baseUrl: string,
@@ -97,7 +141,7 @@ function assertNotHtmlPayload(
   }
 
   throw new Error(
-    `${apiName} 返回了 HTML 页面而不是 JSON。当前 llm.baseUrl 很可能指向了网站首页，而不是 OpenAI-compatible API 根地址：${baseUrl}`,
+    `${apiName} 返回了 HTML 页面而不是 JSON。当前 llm.baseUrl 可能不是 OpenAI-compatible API 根地址，或者上游返回了网关/错误页面：${baseUrl}`,
   );
 }
 
@@ -112,15 +156,14 @@ async function fetchOpenAICompatibleJson(
   response: Response;
 }> {
   const candidates = buildOpenAIPathCandidates(config.llmBaseUrl, endpoint);
-  let lastResponse: Response | null = null;
-  let lastPayload: unknown = null;
   let lastError: Error | null = null;
 
   for (let index = 0; index < candidates.length; index += 1) {
     const url = candidates[index]!;
+    const headers = createRequestHeaders(config);
     const response = await fetch(url, {
       method: "POST",
-      headers: createRequestHeaders(config),
+      headers,
       body: JSON.stringify(body),
       signal: signal ?? AbortSignal.timeout(config.llmTimeoutMs),
     });
@@ -129,16 +172,23 @@ async function fetchOpenAICompatibleJson(
     if (config.debug) {
       console.error(`[RG_CLI][debug][openaiCompatible.${apiName}]`, JSON.stringify({
         url,
+        requestBody: body,
+        responseStatus: response.status,
+        responseStatusText: response.statusText,
+        responseContentType: response.headers.get("content-type"),
         payload,
       }, null, 2));
     }
 
     if (isHtmlPayload(payload)) {
-      lastResponse = response;
-      lastPayload = payload;
-      lastError = new Error(
-        `${apiName} 从 ${url} 返回了 HTML 页面而不是 JSON。`,
-      );
+      lastError = new Error(buildHtmlPayloadErrorMessage({
+        apiName,
+        url,
+        body,
+        payload,
+        response,
+        includeRequestBody: config.debug,
+      }));
       continue;
     }
 
@@ -146,9 +196,7 @@ async function fetchOpenAICompatibleJson(
   }
 
   if (lastError) {
-    throw new Error(
-      `${lastError.message} 当前 llm.baseUrl 很可能指向了网站首页，而不是 OpenAI-compatible API 根地址：${config.llmBaseUrl}`,
-    );
+    throw lastError;
   }
 
   throw new Error(
@@ -196,6 +244,280 @@ function extractTextFromResponsesPayload(payload: unknown): string | null {
   }
 
   return chunks.length > 0 ? chunks.join("\n") : null;
+}
+
+export function extractReasoningSummariesFromResponsesPayload(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const response = payload as {
+    output?: Array<Record<string, unknown>>;
+  };
+
+  if (!Array.isArray(response.output)) {
+    return [];
+  }
+
+  const summaries: string[] = [];
+  const pushIfNonEmpty = (value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+
+    const trimmed = value.trim();
+    if (trimmed) {
+      summaries.push(trimmed);
+    }
+  };
+
+  for (const item of response.output) {
+    if (item.type !== "reasoning") {
+      continue;
+    }
+
+    if (Array.isArray(item.summary)) {
+      for (const summary of item.summary) {
+        if (typeof summary === "string") {
+          pushIfNonEmpty(summary);
+          continue;
+        }
+
+        if (!summary || typeof summary !== "object") {
+          continue;
+        }
+
+        const summaryRecord = summary as Record<string, unknown>;
+        const summaryType = typeof summaryRecord.type === "string"
+          ? summaryRecord.type
+          : "";
+
+        if (
+          (summaryType === "" || summaryType === "summary_text" || summaryType === "text") &&
+          "text" in summaryRecord
+        ) {
+          pushIfNonEmpty(summaryRecord.text);
+          continue;
+        }
+
+        if ("summary_text" in summaryRecord) {
+          pushIfNonEmpty(summaryRecord.summary_text);
+          continue;
+        }
+
+        if ("content" in summaryRecord && typeof summaryRecord.content === "string") {
+          pushIfNonEmpty(summaryRecord.content);
+          continue;
+        }
+      }
+      continue;
+    }
+
+    if ("summary_text" in item) {
+      pushIfNonEmpty(item.summary_text);
+      continue;
+    }
+
+    if ("text" in item) {
+      pushIfNonEmpty(item.text);
+      continue;
+    }
+
+    if (typeof item.summary === "string") {
+      pushIfNonEmpty(item.summary);
+      continue;
+    }
+
+    if (Array.isArray(item.content)) {
+      for (const part of item.content) {
+        if (
+          part &&
+          typeof part === "object" &&
+          "text" in part
+        ) {
+          pushIfNonEmpty((part as Record<string, unknown>).text);
+        }
+      }
+    }
+  }
+
+  return summaries;
+}
+
+type ResponsesInputItem =
+  | {
+    role: "assistant" | "user";
+    content: string;
+  }
+  | {
+    type: "function_call";
+    call_id: string;
+    name: string;
+    arguments: string;
+  }
+  | {
+    type: "function_call_output";
+    call_id: string;
+    output: string;
+  };
+
+function buildResponsesInputItems(
+  messages: AgentConversationMessage[],
+): ResponsesInputItem[] {
+  const items: ResponsesInputItem[] = [];
+  let pendingTextRole: "assistant" | "user" | null = null;
+  let pendingTextChunks: string[] = [];
+
+  const flushPendingText = () => {
+    if (!pendingTextRole || pendingTextChunks.length === 0) {
+      pendingTextRole = null;
+      pendingTextChunks = [];
+      return;
+    }
+
+    const content = pendingTextChunks.join("\n").trim();
+    if (content) {
+      items.push({
+        role: pendingTextRole,
+        content,
+      });
+    }
+
+    pendingTextRole = null;
+    pendingTextChunks = [];
+  };
+
+  for (const message of messages) {
+    if (message.role === "system") {
+      continue;
+    }
+
+    if (typeof message.content === "string") {
+      flushPendingText();
+      const trimmed = message.content.trim();
+      if (trimmed) {
+        items.push({
+          role: message.role,
+          content: trimmed,
+        });
+      }
+      continue;
+    }
+
+    for (const block of message.content) {
+      if (block.type === "text") {
+        const trimmed = block.text.trim();
+        if (!trimmed) {
+          continue;
+        }
+
+        if (pendingTextRole !== message.role) {
+          flushPendingText();
+          pendingTextRole = message.role;
+        }
+        pendingTextChunks.push(trimmed);
+        continue;
+      }
+
+      flushPendingText();
+
+      if (block.type === "tool_use") {
+        items.push({
+          type: "function_call",
+          call_id: block.id,
+          name: block.name,
+          arguments: JSON.stringify(block.input),
+        });
+        continue;
+      }
+
+      items.push({
+        type: "function_call_output",
+        call_id: block.toolUseId,
+        output: block.content,
+      });
+    }
+  }
+
+  flushPendingText();
+  return items;
+}
+
+export function extractAssistantBlocksFromResponsesPayload(
+  payload: unknown,
+): GenerateAssistantTurnResult {
+  if (!payload || typeof payload !== "object") {
+    return { blocks: [] };
+  }
+
+  const response = payload as {
+    id?: string;
+    output?: Array<Record<string, unknown>>;
+  };
+
+  const blocks: GenerateAssistantTurnResult["blocks"] = [];
+
+  for (const item of response.output ?? []) {
+    if (item.type === "message" && Array.isArray(item.content)) {
+      for (const part of item.content) {
+        if (
+          part &&
+          typeof part === "object" &&
+          "type" in part &&
+          part.type === "output_text" &&
+          "text" in part &&
+          typeof part.text === "string" &&
+          part.text.trim()
+        ) {
+          blocks.push({
+            type: "text",
+            text: part.text.trim(),
+          });
+        }
+      }
+      continue;
+    }
+
+    if (
+      item.type === "function_call" &&
+      typeof item.name === "string"
+    ) {
+      let input: Record<string, unknown> = {};
+      if (typeof item.arguments === "string" && item.arguments.trim()) {
+        try {
+          const parsed = JSON.parse(item.arguments);
+          if (parsed && typeof parsed === "object") {
+            input = parsed as Record<string, unknown>;
+          }
+        } catch {
+          input = {};
+        }
+      } else if (item.arguments && typeof item.arguments === "object") {
+        input = item.arguments as Record<string, unknown>;
+      }
+
+      const callId = typeof item.call_id === "string" && item.call_id.trim()
+        ? item.call_id
+        : typeof item.id === "string" && item.id.trim()
+        ? item.id
+        : `function_call_${blocks.length}`;
+
+      blocks.push({
+        type: "tool_use",
+        id: callId,
+        name: item.name,
+        input,
+      });
+    }
+  }
+
+  return {
+    blocks,
+    reasoningSummaries: extractReasoningSummariesFromResponsesPayload(payload),
+    responseId: typeof response.id === "string" ? response.id : undefined,
+    rawOutputItems: response.output,
+    raw: payload,
+  };
 }
 
 function extractTextFromChatCompletionsPayload(payload: unknown): string | null {
@@ -402,6 +724,30 @@ function buildResponsesPrompt(messages: LlmMessage[]): string {
   }).join("\n\n");
 }
 
+function buildResponsesInclude(
+  reasoningEffort: GenerateTextParams["reasoningEffort"] | GenerateAssistantTurnParams["reasoningEffort"],
+  reasoningSummary: GenerateTextParams["reasoningSummary"] | GenerateAssistantTurnParams["reasoningSummary"],
+  config: AppConfig,
+): string[] {
+  const effectiveEffort = reasoningEffort ?? config.llmReasoningEffort;
+  const effectiveSummary = reasoningSummary ?? config.llmReasoningSummary;
+
+  if (effectiveEffort === "none" || effectiveSummary === undefined) {
+    return [];
+  }
+
+  return ["reasoning.encrypted_content"];
+}
+
+function buildResponsesTextControls(): Record<string, unknown> {
+  return {
+    format: {
+      type: "text",
+    },
+    verbosity: "medium",
+  };
+}
+
 async function callResponsesApi(
   config: AppConfig,
   params: GenerateTextParams,
@@ -413,6 +759,17 @@ async function callResponsesApi(
     {
       model: params.model,
       input: buildResponsesPrompt(messages),
+      reasoning: {
+        effort: params.reasoningEffort ?? config.llmReasoningEffort,
+        summary: params.reasoningSummary ?? config.llmReasoningSummary,
+      },
+      parallel_tool_calls: true,
+      include: buildResponsesInclude(
+        params.reasoningEffort,
+        params.reasoningSummary,
+        config,
+      ),
+      text: buildResponsesTextControls(),
     },
     "responses",
     params.signal,
@@ -432,7 +789,70 @@ async function callResponsesApi(
     throw new Error("OpenAI-compatible responses 返回成功，但未解析出文本内容。");
   }
 
-  return { text, raw: payload };
+  return {
+    text,
+    reasoningSummaries: extractReasoningSummariesFromResponsesPayload(payload),
+    raw: payload,
+  };
+}
+
+async function callResponsesAssistantTurn(
+  config: AppConfig,
+  params: GenerateAssistantTurnParams,
+): Promise<GenerateAssistantTurnResult> {
+  const { response, payload } = await fetchOpenAICompatibleJson(
+    config,
+    "responses",
+    buildResponsesAssistantTurnBody(config, params),
+    "generateAssistantTurn",
+    params.signal,
+  );
+
+  if (!response.ok) {
+    const apiMessage = getErrorMessageFromPayload(payload);
+    throw new Error(
+      apiMessage
+        ? `OpenAI-compatible responses tool turn failed: ${apiMessage}`
+        : `OpenAI-compatible responses tool turn failed: HTTP ${response.status}`,
+    );
+  }
+
+  return extractAssistantBlocksFromResponsesPayload(payload);
+}
+
+function buildResponsesAssistantTurnBody(
+  config: AppConfig,
+  params: GenerateAssistantTurnParams,
+): Record<string, unknown> {
+  const inputItems = buildResponsesInputItems(params.messages);
+
+  return {
+    model: params.model,
+    input: inputItems,
+    tools: params.tools.map((tool) => ({
+      type: "function",
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema,
+    })),
+    tool_choice: params.toolChoice === "required" ? "required" : "auto",
+    parallel_tool_calls: true,
+    reasoning: {
+      effort: params.reasoningEffort ?? config.llmReasoningEffort,
+      summary: params.reasoningSummary ?? config.llmReasoningSummary,
+    },
+    store: params.store ?? false,
+    include: buildResponsesInclude(
+      params.reasoningEffort,
+      params.reasoningSummary,
+      config,
+    ),
+    text: buildResponsesTextControls(),
+    ...(params.instructions ? { instructions: params.instructions } : {}),
+    ...(params.previousResponseId
+      ? { previous_response_id: params.previousResponseId }
+      : {}),
+  };
 }
 
 async function callChatCompletionsApi(
@@ -471,7 +891,7 @@ async function callChatCompletionsApi(
 }
 
 export function createOpenAICompatibleClient(config: AppConfig): LlmClient {
-  return {
+  const client: LlmClient = {
     async generateText(params: GenerateTextParams): Promise<GenerateTextResult> {
       if (config.llmWireApi === "responses") {
         return callResponsesApi(config, params);
@@ -488,6 +908,10 @@ export function createOpenAICompatibleClient(config: AppConfig): LlmClient {
     async generateAssistantTurn(
       params: GenerateAssistantTurnParams,
     ): Promise<GenerateAssistantTurnResult> {
+      if (config.llmWireApi === "responses") {
+        return callResponsesAssistantTurn(config, params);
+      }
+
       const { response, payload } = await fetchOpenAICompatibleJson(
         config,
         "chat/completions",
@@ -522,5 +946,30 @@ export function createOpenAICompatibleClient(config: AppConfig): LlmClient {
         raw: payload,
       };
     },
+    streamAssistantTurn(
+      params: GenerateAssistantTurnParams,
+    ): AsyncGenerator<AssistantTurnStreamEvent, GenerateAssistantTurnResult> {
+      if (config.llmWireApi === "responses") {
+        return streamOpenAIResponsesAssistantTurn({
+          baseUrl: config.llmBaseUrl,
+          urlCandidates: buildOpenAIPathCandidates(config.llmBaseUrl, "responses"),
+          headers: createRequestHeaders(config),
+          body: buildResponsesAssistantTurnBody(config, params),
+          timeoutMs: config.llmTimeoutMs,
+          signal: params.signal,
+          extractResultFromPayload: extractAssistantBlocksFromResponsesPayload,
+        });
+      }
+
+      return streamAssistantTurnByGenerating(() => client.generateAssistantTurn(params));
+    },
   };
+
+  return client;
+}
+
+async function* streamAssistantTurnByGenerating(
+  generateAssistantTurn: () => Promise<GenerateAssistantTurnResult>,
+): AsyncGenerator<AssistantTurnStreamEvent, GenerateAssistantTurnResult> {
+  return await generateAssistantTurn();
 }

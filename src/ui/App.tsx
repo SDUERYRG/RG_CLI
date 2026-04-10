@@ -12,6 +12,7 @@ import { Footer } from "./components/Footer.tsx";
 import { Header } from "./components/Header.tsx";
 import { MessageList } from "./components/MessageList.tsx";
 import { PromptInput } from "./components/PromptInput.tsx";
+import { ThinkingPanel } from "./components/ThinkingPanel.tsx";
 import {
   createAssistantReply,
   createChatSession,
@@ -42,6 +43,7 @@ export function App({ config }: AppProps) {
     createChatSession(cwd, [getWelcomeMessage()])
   );
   const [isLoading, setIsLoading] = useState(false);
+  const [liveThinkingText, setLiveThinkingText] = useState<string | undefined>();
   const titleGenerationInFlight = useRef(new Set<string>());
   const queryEngineRef = useRef(new QueryEngine({ config }));
   const messages = activeSession.messages;
@@ -64,6 +66,7 @@ export function App({ config }: AppProps) {
     syncMessageIdSequence(session.messages);
     setActiveSession(session);
     setQuery("");
+    setLiveThinkingText(undefined);
   }
 
   useInput((input, key) => {
@@ -191,24 +194,32 @@ export function App({ config }: AppProps) {
 
     setQuery("");
     setIsLoading(true);
+    setLiveThinkingText(undefined);
+    let latestSession = activeSession;
 
     try {
-      let sessionAfterAssistantReply = activeSession;
-      for await (const sessionUpdate of queryEngineRef.current.submitMessage(
+      for await (const step of queryEngineRef.current.submitMessage(
         activeSession,
         nextValue,
       )) {
-        sessionAfterAssistantReply = sessionUpdate;
-        setActiveSession(sessionUpdate);
-        void persistSession(sessionUpdate);
+        latestSession = step.session;
+        setActiveSession(step.session);
+        setLiveThinkingText(step.liveThinkingText);
+        if (step.persist) {
+          void persistSession(step.session);
+        }
       }
-      maybeGenerateAiTitle(sessionAfterAssistantReply);
+      maybeGenerateAiTitle(latestSession);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const fallbackUserMessage = updateChatSessionMessages(activeSession, [
-        ...messages,
-        createMessage("user", nextValue),
-      ]);
+      const latestMessage = latestSession.messages.at(-1);
+      const fallbackUserMessage = latestMessage?.role === "user" &&
+          latestMessage.content === nextValue
+        ? latestSession
+        : updateChatSessionMessages(latestSession, [
+          ...latestSession.messages,
+          createMessage("user", nextValue),
+        ]);
       const sessionAfterFailureReply = updateChatSessionMessages(
         fallbackUserMessage,
         [
@@ -220,9 +231,11 @@ export function App({ config }: AppProps) {
       );
 
       setActiveSession(sessionAfterFailureReply);
+      setLiveThinkingText(undefined);
       await persistSession(sessionAfterFailureReply);
     } finally {
       setIsLoading(false);
+      setLiveThinkingText(undefined);
     }
   }
 
@@ -239,6 +252,7 @@ export function App({ config }: AppProps) {
         <Text dimColor>摘要：{sessionSummary}</Text>
       </Box>
       <MessageList messages={messages} />
+      <ThinkingPanel text={liveThinkingText} isLoading={isLoading} />
       <PromptInput
         value={query}
         onChange={setQuery}

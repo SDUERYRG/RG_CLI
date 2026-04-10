@@ -13,6 +13,8 @@ export type AppConfig = {
   llmBaseUrl: string;
   llmApiKey?: string;
   llmWireApi: "messages" | "responses" | "chat.completions";
+  llmReasoningEffort: "none" | "low" | "medium" | "high" | "xhigh";
+  llmReasoningSummary: "auto" | "concise" | "detailed";
   llmTimeoutMs: number;
   llmHeaders: Record<string, string>;
 };
@@ -26,6 +28,8 @@ export const defaultConfig: AppConfig = {
   llmBaseUrl: "https://api.anthropic.com",
   llmApiKey: undefined,
   llmWireApi: "messages",
+  llmReasoningEffort: "xhigh",
+  llmReasoningSummary: "detailed",
   llmTimeoutMs: 60_000,
   llmHeaders: {},
 };

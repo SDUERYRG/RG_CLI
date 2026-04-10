@@ -26,13 +26,14 @@ const MAX_TITLE_LENGTH = 36;
 const MAX_SUMMARY_LENGTH = 96;
 
 export type PersistedChatSession = {
-  version: 3;
+  version: 4;
   id: string;
   cwd: string;
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
   agentMessages: AgentMessage[];
+  lastResponsesResponseId?: string;
   customTitle?: string;
   aiTitle?: string;
   firstPrompt?: string;
@@ -56,13 +57,14 @@ type LiteSessionFile = {
 };
 
 type LegacyPersistedChatSession = {
-  version?: 1 | 2 | 3;
+  version?: 1 | 2 | 3 | 4;
   id: string;
   cwd: string;
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
   agentMessages?: AgentMessage[];
+  lastResponsesResponseId?: string;
   customTitle?: string;
   generatedTitle?: string;
   aiTitle?: string;
@@ -102,7 +104,7 @@ export function createChatSession(
   const now = new Date().toISOString();
 
   return withDerivedSessionMetadata({
-    version: 3,
+    version: 4,
     id: randomUUID(),
     cwd,
     createdAt: now,
@@ -256,6 +258,8 @@ function withDerivedSessionMetadata(
   const aiTitle = session.aiTitle?.trim() ||
     legacyGeneratedTitle?.trim() ||
     undefined;
+  const lastResponsesResponseId = session.lastResponsesResponseId?.trim() ||
+    undefined;
   const sessionSummary = deriveSessionSummary(session.messages) ||
     session.sessionSummary?.trim() ||
     legacySummary?.trim() ||
@@ -266,8 +270,9 @@ function withDerivedSessionMetadata(
 
   return {
     ...rest,
-    version: 3,
+    version: 4,
     agentMessages,
+    lastResponsesResponseId,
     customTitle,
     aiTitle,
     firstPrompt,
@@ -398,6 +403,17 @@ export function updateChatSessionAgentMessages(
   return withDerivedSessionMetadata({
     ...session,
     agentMessages,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+export function updateChatSessionLastResponsesResponseId(
+  session: PersistedChatSession,
+  responseId: string | undefined,
+): PersistedChatSession {
+  return withDerivedSessionMetadata({
+    ...session,
+    lastResponsesResponseId: responseId,
     updatedAt: new Date().toISOString(),
   });
 }

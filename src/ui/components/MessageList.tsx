@@ -18,6 +18,10 @@ function MessageItem({ message }: { message: ChatMessage }) {
     ? "Tool Call"
     : message.kind === "tool_result"
     ? "Tool Result"
+    : message.kind === "debug"
+    ? "Debug"
+    : message.kind === "thinking"
+    ? "Thinking"
     : message.role === "user"
     ? "You"
     : "Assistant";
@@ -25,6 +29,10 @@ function MessageItem({ message }: { message: ChatMessage }) {
     ? theme.warning
     : message.kind === "tool_result"
     ? theme.secondary
+    : message.kind === "debug"
+    ? theme.debug
+    : message.kind === "thinking"
+    ? theme.thinking
     : message.role === "user"
     ? theme.primary
     : theme.accent;

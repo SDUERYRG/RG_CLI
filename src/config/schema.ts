@@ -18,6 +18,8 @@ export const UserSettingsSchema = z.object({
     apiKey: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
     wireApi: z.enum(["messages", "responses", "chat.completions"]).optional(),
+    reasoningEffort: z.enum(["none", "low", "medium", "high", "xhigh"]).optional(),
+    reasoningSummary: z.enum(["auto", "concise", "detailed"]).optional(),
     timeoutMs: z.number().int().positive().optional(),
     headers: z.record(z.string(), z.string()).optional(),
   }).optional(),

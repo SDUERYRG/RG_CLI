@@ -8,6 +8,13 @@ import type { AppConfig } from "./defaults.ts";
 
 export type LlmProvider = "anthropic-compatible" | "openai-compatible";
 export type LlmWireApi = "messages" | "responses" | "chat.completions";
+export type LlmReasoningEffort =
+  | "none"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
+export type LlmReasoningSummary = "auto" | "concise" | "detailed";
 
 export type UserSettingsInput = {
   $schema?: string;
@@ -21,6 +28,8 @@ export type UserSettingsInput = {
     apiKey?: string;
     model?: string;
     wireApi?: LlmWireApi;
+    reasoningEffort?: LlmReasoningEffort;
+    reasoningSummary?: LlmReasoningSummary;
     timeoutMs?: number;
     headers?: Record<string, string>;
   };

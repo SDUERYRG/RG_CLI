@@ -31,6 +31,7 @@ export {
   updateChatSessionAgentMessages,
   updateChatSessionAiTitle,
   updateChatSessionCustomTitle,
+  updateChatSessionLastResponsesResponseId,
   updateChatSessionMessages,
 } from "./storage.ts";
 export {
@@ -38,6 +39,7 @@ export {
   generateSessionAiTitle,
 } from "./sessionTitle.ts";
 export { QueryEngine } from "./QueryEngine.ts";
+export type { QueryEngineStep } from "./QueryEngine.ts";
 export type {
   ChatSessionSummary,
   PersistedChatSession,

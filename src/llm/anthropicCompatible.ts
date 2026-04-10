@@ -6,6 +6,7 @@
  */
 import type { AppConfig } from "../config/defaults.ts";
 import type {
+  AssistantTurnStreamEvent,
   AgentConversationContentBlock,
   AgentConversationMessage,
   GenerateAssistantTurnParams,
@@ -260,8 +261,14 @@ function splitAnthropicMessages(messages: LlmMessage[]): {
   };
 }
 
+async function* streamAssistantTurnByGenerating(
+  generateAssistantTurn: () => Promise<GenerateAssistantTurnResult>,
+): AsyncGenerator<AssistantTurnStreamEvent, GenerateAssistantTurnResult> {
+  return await generateAssistantTurn();
+}
+
 export function createAnthropicCompatibleClient(config: AppConfig): LlmClient {
-  return {
+  const client: LlmClient = {
     async generateText(params: GenerateTextParams): Promise<GenerateTextResult> {
       if (config.llmWireApi !== "messages") {
         throw new Error(
@@ -365,5 +372,12 @@ export function createAnthropicCompatibleClient(config: AppConfig): LlmClient {
         raw: payload,
       };
     },
+    streamAssistantTurn(
+      params: GenerateAssistantTurnParams,
+    ): AsyncGenerator<AssistantTurnStreamEvent, GenerateAssistantTurnResult> {
+      return streamAssistantTurnByGenerating(() => client.generateAssistantTurn(params));
+    },
   };
+
+  return client;
 }

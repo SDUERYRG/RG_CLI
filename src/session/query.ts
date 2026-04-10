@@ -1,14 +1,17 @@
 /**
- * 文件信息
- * 时间：2026-04-10 00:00:00 +08:00
- * 作用：执行单次用户请求的主循环。
- * 说明：实现思路借鉴 claude-code 的 query.ts：
- * 1. 先把上下文和工具一起发给模型。
- * 2. 如果模型要求调用工具，就执行工具。
- * 3. 把 tool_result 追加回消息，再继续下一轮。
- * 4. 没有 tool_use 时结束本轮。
+ * Query loop for a single user turn.
+ *
+ * The loop supports two execution styles:
+ * 1. Legacy replay mode: send context + tools every round.
+ * 2. Native OpenAI Responses mode: bootstrap once, then continue with
+ *    previous_response_id + function_call_output items.
  */
-import type { LlmClient } from "../llm/types.ts";
+import type {
+  AssistantTurnStreamEvent,
+  GenerateAssistantTurnParams,
+  GenerateAssistantTurnResult,
+  LlmClient,
+} from "../llm/types.ts";
 import { getRegisteredTools } from "../tools/registry.ts";
 import { runToolCalls } from "../tools/runTools.ts";
 import type {
@@ -17,7 +20,8 @@ import type {
   AgentToolUseBlock,
 } from "./types.ts";
 
-const MAX_TOOL_ITERATIONS = 6;
+const EMPTY_ANSWER_RECOVERY_PROMPT =
+  "Please answer the user's original question directly using the tool results above. If the information is already sufficient, do not call more tools.";
 
 export type QueryParams = {
   client: LlmClient;
@@ -25,6 +29,10 @@ export type QueryParams = {
   messages: AgentMessage[];
   cwd: string;
   systemPrompt?: string;
+  previousResponseId?: string;
+  useNativeOpenAIResponses?: boolean;
+  reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
+  reasoningSummary?: "auto" | "concise" | "detailed";
   debug?: boolean;
   signal?: AbortSignal;
 };
@@ -32,12 +40,44 @@ export type QueryParams = {
 export type QueryResult = {
   messages: AgentMessage[];
   assistantText: string;
+  reasoningSummaries?: string[];
+  lastResponseId?: string;
 };
 
 export type QueryUpdate = {
   addedMessages: AgentMessage[];
   debugEntries?: string[];
+  reasoningDelta?: string;
+  reasoningSectionBreak?: boolean;
 };
+
+function summarizeRawOutputItemTypes(items: unknown[] | undefined): string[] {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items.map((item) => {
+    if (!item || typeof item !== "object") {
+      return typeof item;
+    }
+
+    const type = "type" in item && typeof item.type === "string"
+      ? item.type
+      : "unknown";
+    if (type === "message" && "content" in item && Array.isArray(item.content)) {
+      const contentTypes = item.content
+        .map((part) =>
+          part && typeof part === "object" && "type" in part && typeof part.type === "string"
+            ? part.type
+            : "unknown"
+        )
+        .join(",");
+      return `${type}(${contentTypes})`;
+    }
+
+    return type;
+  });
+}
 
 function extractToolUses(
   message: AgentMessage,
@@ -64,10 +104,14 @@ function extractAssistantText(message: AgentMessage): string {
     .trim();
 }
 
-function getLatestUserPrompt(messages: AgentMessage[]): string {
-  const latestUserMessage = [...messages]
+function getLatestUserMessage(messages: AgentMessage[]): AgentMessage | undefined {
+  return [...messages]
     .reverse()
     .find((message) => message.role === "user");
+}
+
+function getLatestUserPrompt(messages: AgentMessage[]): string {
+  const latestUserMessage = getLatestUserMessage(messages);
 
   if (!latestUserMessage) {
     return "";
@@ -90,7 +134,9 @@ function shouldForceToolUse(userPrompt: string): boolean {
     return false;
   }
 
-  return /工作目录|cwd|目录|列出|文件|查看|读取|时间|time/i.test(userPrompt);
+  return /cwd|directory|list|file|read|time|工作目录|目录|列出|文件|查看|读取|时间/i.test(
+    userPrompt,
+  );
 }
 
 function stringifyBlockContent(message: AgentMessage): string {
@@ -114,7 +160,7 @@ function stringifyBlockContent(message: AgentMessage): string {
       const shortened = text.length > 300
         ? `${text.slice(0, 300).trim()}...`
         : text;
-      parts.push(`工具结果(${block.toolUseId})：${shortened}`);
+      parts.push(`Tool result (${block.toolUseId}): ${shortened}`);
     }
   }
 
@@ -183,8 +229,8 @@ function buildToolSelectionMessages(
         return "";
       }
 
-      const label = message.role === "user" ? "用户" : "助手";
-      return `${label}：${content}`;
+      const label = message.role === "user" ? "User" : "Assistant";
+      return `${label}: ${content}`;
     })
     .filter(Boolean)
     .join("\n\n");
@@ -201,7 +247,7 @@ function buildToolSelectionMessages(
   if (contextualSummary) {
     lightweightMessages.push({
       role: "system" as const,
-      content: `最近上下文摘要：\n${contextualSummary}`,
+      content: `Recent context summary:\n${contextualSummary}`,
     });
   }
 
@@ -212,39 +258,199 @@ function buildToolSelectionMessages(
   return lightweightMessages.length > 0 ? lightweightMessages : messages;
 }
 
+function buildInstructionsForAssistantTurn(
+  messages: AgentMessage[],
+  fallbackSystemPrompt?: string,
+): string | undefined {
+  const systemChunks = messages
+    .filter((message) => message.role === "system")
+    .map((message) => {
+      if (typeof message.content === "string") {
+        return message.content.trim();
+      }
+
+      return message.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text.trim())
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+    })
+    .filter(Boolean);
+
+  if (systemChunks.length > 0) {
+    return systemChunks.join("\n\n");
+  }
+
+  return fallbackSystemPrompt?.trim() || undefined;
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.name === "AbortError" || error.name === "TimeoutError";
+}
+
+function mapAssistantTurnStreamEventToQueryUpdate(
+  event: AssistantTurnStreamEvent,
+): QueryUpdate | null {
+  if (event.type === "reasoning_delta") {
+    return {
+      addedMessages: [],
+      reasoningDelta: event.delta,
+    };
+  }
+
+  if (event.type === "reasoning_section_break") {
+    return {
+      addedMessages: [],
+      reasoningSectionBreak: true,
+    };
+  }
+
+  return null;
+}
+
+function appendUniqueReasoningSummaries(
+  currentSummaries: string[],
+  seenSummaries: Set<string>,
+  nextSummaries: string[] | undefined,
+): void {
+  if (!nextSummaries) {
+    return;
+  }
+
+  for (const summary of nextSummaries) {
+    const normalizedSummary = summary.trim();
+    if (!normalizedSummary || seenSummaries.has(normalizedSummary)) {
+      continue;
+    }
+
+    seenSummaries.add(normalizedSummary);
+    currentSummaries.push(normalizedSummary);
+  }
+}
+
+function isAssistantTurnResultEmpty(result: GenerateAssistantTurnResult): boolean {
+  const hasBlocks = Array.isArray(result.blocks) && result.blocks.length > 0;
+  const hasReasoningSummaries = Array.isArray(result.reasoningSummaries) &&
+    result.reasoningSummaries.some((summary) => summary.trim().length > 0);
+  const hasRawOutputItems = Array.isArray(result.rawOutputItems) &&
+    result.rawOutputItems.length > 0;
+
+  return !hasBlocks && !hasReasoningSummaries && !hasRawOutputItems;
+}
+
+async function collectAssistantTurnWithOptionalStreaming(
+  params: QueryParams,
+  assistantTurnParams: GenerateAssistantTurnParams,
+  pendingStreamUpdates: QueryUpdate[],
+): Promise<{
+  assistantTurn: GenerateAssistantTurnResult;
+  streamed: boolean;
+  fallbackUsed: boolean;
+}> {
+  if (!params.useNativeOpenAIResponses) {
+    return {
+      assistantTurn: await params.client.generateAssistantTurn(assistantTurnParams),
+      streamed: false,
+      fallbackUsed: false,
+    };
+  }
+
+  try {
+    const stream = params.client.streamAssistantTurn(assistantTurnParams);
+    while (true) {
+      const step = await stream.next();
+      if (step.done) {
+        if (isAssistantTurnResultEmpty(step.value)) {
+          return {
+            assistantTurn: await params.client.generateAssistantTurn(assistantTurnParams),
+            streamed: true,
+            fallbackUsed: true,
+          };
+        }
+        return {
+          assistantTurn: step.value,
+          streamed: true,
+          fallbackUsed: false,
+        };
+      }
+
+      const streamUpdate = mapAssistantTurnStreamEventToQueryUpdate(step.value);
+      if (streamUpdate) {
+        pendingStreamUpdates.push(streamUpdate);
+      }
+    }
+  } catch (error) {
+    if (params.signal?.aborted || isAbortError(error)) {
+      throw error;
+    }
+
+    return {
+      assistantTurn: await params.client.generateAssistantTurn(assistantTurnParams),
+      streamed: false,
+      fallbackUsed: true,
+    };
+  }
+}
+
 export async function* query(
   params: QueryParams,
 ): AsyncGenerator<QueryUpdate, QueryResult> {
   let workingMessages = [...params.messages];
   const tools = getRegisteredTools();
   let attemptedEmptyAnswerRecovery = false;
+  // Match the working Codex HTTP Responses format: replay full input items
+  // rather than relying on previous_response_id continuation.
+  const allowNativeResponsesContinuation = false;
+  let previousResponseId = params.previousResponseId;
+  const reasoningSummaries: string[] = [];
+  const seenReasoningSummaries = new Set<string>();
+
   const shouldRequireToolOnFirstTurn = shouldForceToolUse(
     getLatestUserPrompt(workingMessages),
   );
 
-  for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
-    const messagesForToolSelection: AgentMessage[] = iteration === 0
+  for (let iteration = 0; ; iteration += 1) {
+    const pendingStreamUpdates: QueryUpdate[] = [];
+    const isNativeResponsesContinuation = allowNativeResponsesContinuation &&
+      previousResponseId !== undefined &&
+      false;
+    const replayMessagesForAssistantTurn: AgentMessage[] = iteration === 0
       ? buildToolSelectionMessages(workingMessages, params.systemPrompt)
       : (params.systemPrompt
         ? [{ role: "system" as const, content: params.systemPrompt }, ...workingMessages]
         : workingMessages);
+    let messagesForAssistantTurn: AgentMessage[] = isNativeResponsesContinuation
+      ? []
+      : replayMessagesForAssistantTurn;
+    let instructionsForAssistantTurn = params.useNativeOpenAIResponses
+      ? buildInstructionsForAssistantTurn(
+        messagesForAssistantTurn,
+        params.systemPrompt,
+      )
+      : params.systemPrompt;
 
     if (params.debug) {
       yield {
         addedMessages: [],
         debugEntries: [
-          `[RG_CLI][debug] query.toolSelectionContext\n${JSON.stringify(
-            messagesForToolSelection.map(serializeAgentMessageForDebug),
-            null,
-            2,
-          )}`,
+          `[RG_CLI][debug] query.requestContext\n${JSON.stringify({
+            iteration,
+            isNativeResponsesContinuation,
+            previousResponseId,
+            messages: messagesForAssistantTurn.map(serializeAgentMessageForDebug),
+          }, null, 2)}`,
         ],
       };
     }
 
-    const assistantTurn = await params.client.generateAssistantTurn({
+    const assistantTurnParams: GenerateAssistantTurnParams = {
       model: params.model,
-      messages: messagesForToolSelection,
+      messages: messagesForAssistantTurn,
       tools: tools.map((tool) => ({
         name: tool.name,
         description: tool.description,
@@ -253,8 +459,65 @@ export async function* query(
       toolChoice: iteration === 0 && shouldRequireToolOnFirstTurn
         ? "required"
         : "auto",
+      reasoningEffort: params.reasoningEffort,
+      reasoningSummary: params.reasoningSummary,
+      previousResponseId: undefined,
+      instructions: instructionsForAssistantTurn,
+      store: false,
       signal: params.signal,
-    });
+    };
+    let assistantTurn: GenerateAssistantTurnResult;
+    let fallbackUsed: boolean;
+    let streamed: boolean;
+    try {
+      ({
+        assistantTurn,
+        fallbackUsed,
+        streamed,
+      } = await collectAssistantTurnWithOptionalStreaming(
+        params,
+        assistantTurnParams,
+        pendingStreamUpdates,
+      ));
+    } catch (error) {
+      if (!isNativeResponsesContinuation) {
+        throw error;
+      }
+
+      throw error;
+    }
+
+    while (pendingStreamUpdates.length > 0) {
+      const streamUpdate = pendingStreamUpdates.shift();
+      if (streamUpdate) {
+        yield streamUpdate;
+      }
+    }
+
+    previousResponseId = assistantTurn.responseId ?? previousResponseId;
+    appendUniqueReasoningSummaries(
+      reasoningSummaries,
+      seenReasoningSummaries,
+      assistantTurn.reasoningSummaries,
+    );
+
+    if (params.debug) {
+      yield {
+        addedMessages: [],
+        debugEntries: [
+          `[RG_CLI][debug] query.assistantTurnMeta\n${JSON.stringify({
+            iteration,
+            responseId: assistantTurn.responseId ?? null,
+            reasoningSummaries: assistantTurn.reasoningSummaries ?? [],
+            rawOutputItemTypes: summarizeRawOutputItemTypes(
+              assistantTurn.rawOutputItems,
+            ),
+            streamed,
+            fallbackUsed,
+          }, null, 2)}`,
+        ],
+      };
+    }
 
     const assistantMessage: AgentMessage = {
       role: "assistant",
@@ -275,13 +538,13 @@ export async function* query(
 
       if (!assistantText && hasToolResults && !attemptedEmptyAnswerRecovery) {
         attemptedEmptyAnswerRecovery = true;
+        const recoveryMessage: AgentMessage = {
+          role: "user",
+          content: EMPTY_ANSWER_RECOVERY_PROMPT,
+        };
         workingMessages = [
           ...workingMessages,
-          {
-            role: "user",
-            content:
-              "请基于上面的工具结果，直接回答用户原始问题。如果信息已经足够，不要继续调用工具。",
-          },
+          recoveryMessage,
         ];
         if (params.debug) {
           yield {
@@ -301,6 +564,10 @@ export async function* query(
       return {
         messages: workingMessages,
         assistantText,
+        reasoningSummaries: reasoningSummaries.length > 0
+          ? reasoningSummaries
+          : undefined,
+        lastResponseId: previousResponseId,
       };
     }
 
@@ -317,5 +584,4 @@ export async function* query(
     };
   }
 
-  throw new Error(`工具调用轮次超过上限（${MAX_TOOL_ITERATIONS}）。`);
 }

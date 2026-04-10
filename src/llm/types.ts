@@ -52,11 +52,14 @@ export type AgentConversationMessage = {
 export type GenerateTextParams = {
   model: string;
   messages: LlmMessage[];
+  reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
+  reasoningSummary?: "auto" | "concise" | "detailed";
   signal?: AbortSignal;
 };
 
 export type GenerateTextResult = {
   text: string;
+  reasoningSummaries?: string[];
   raw?: unknown;
 };
 
@@ -65,6 +68,11 @@ export type GenerateAssistantTurnParams = {
   messages: AgentConversationMessage[];
   tools: LlmToolDefinition[];
   toolChoice?: "auto" | "required";
+  reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
+  reasoningSummary?: "auto" | "concise" | "detailed";
+  previousResponseId?: string;
+  instructions?: string;
+  store?: boolean;
   signal?: AbortSignal;
 };
 
@@ -73,12 +81,31 @@ export type GenerateAssistantTurnResult = {
     | AgentConversationTextBlock
     | AgentConversationToolUseBlock
   >;
+  reasoningSummaries?: string[];
+  responseId?: string;
+  rawOutputItems?: unknown[];
   raw?: unknown;
 };
+
+export type AssistantTurnStreamEvent =
+  | {
+    type: "reasoning_delta";
+    delta: string;
+  }
+  | {
+    type: "reasoning_section_break";
+  }
+  | {
+    type: "output_text_delta";
+    delta: string;
+  };
 
 export interface LlmClient {
   generateText(params: GenerateTextParams): Promise<GenerateTextResult>;
   generateAssistantTurn(
     params: GenerateAssistantTurnParams,
   ): Promise<GenerateAssistantTurnResult>;
+  streamAssistantTurn(
+    params: GenerateAssistantTurnParams,
+  ): AsyncGenerator<AssistantTurnStreamEvent, GenerateAssistantTurnResult>;
 }

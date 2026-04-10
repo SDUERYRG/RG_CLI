@@ -10,4 +10,5 @@ export const theme = {
   accent: "green",
   warning: "yellow",
   debug: "magenta",
+  thinking: "blue",
 } as const;

@@ -1,9 +1,5 @@
 /**
- * 文件信息
- * 时间：2026-04-10 00:00:00 +08:00
- * 作用：管理会话级查询流程。
- * 说明：实现思路借鉴 claude-code 的 QueryEngine.ts：
- * 让 UI 不直接调模型，而是通过会话引擎提交消息。
+ * Session-level query orchestration.
  */
 import type { AppConfig } from "../config/defaults.ts";
 import { createLlmClient } from "../llm/createClient.ts";
@@ -17,6 +13,7 @@ import { query } from "./query.ts";
 import type { PersistedChatSession } from "./storage.ts";
 import {
   updateChatSessionAgentMessages,
+  updateChatSessionLastResponsesResponseId,
   updateChatSessionMessages,
 } from "./storage.ts";
 import type {
@@ -27,6 +24,13 @@ import type {
 
 type QueryEngineConfig = {
   config: AppConfig;
+  client?: LlmClient;
+};
+
+export type QueryEngineStep = {
+  session: PersistedChatSession;
+  persist: boolean;
+  liveThinkingText?: string;
 };
 
 const RG_CLI_AGENT_SYSTEM_PROMPT = [
@@ -90,6 +94,50 @@ function createDebugMessage(content: string) {
       kind: "debug",
     },
   );
+}
+
+function createThinkingMessage(content: string) {
+  return createMessage(
+    "assistant",
+    content,
+    {
+      includeInContext: false,
+      kind: "thinking",
+    },
+  );
+}
+
+function joinReasoningSummaries(reasoningSummaries: string[] | undefined): string | undefined {
+  if (!reasoningSummaries) {
+    return undefined;
+  }
+
+  const normalizedSummaries = reasoningSummaries
+    .map((summary) => summary.trim())
+    .filter(Boolean);
+  if (normalizedSummaries.length === 0) {
+    return undefined;
+  }
+
+  return normalizedSummaries.join("\n\n");
+}
+
+function appendLiveThinkingText(
+  currentText: string,
+  reasoningDelta: string | undefined,
+  reasoningSectionBreak: boolean | undefined,
+): string {
+  let nextText = currentText;
+
+  if (reasoningSectionBreak && nextText.trim()) {
+    nextText = `${nextText}\n\n`;
+  }
+
+  if (reasoningDelta) {
+    nextText = `${nextText}${reasoningDelta}`;
+  }
+
+  return nextText;
 }
 
 function deriveDisplayMessagesFromAgentMessages(
@@ -164,15 +212,15 @@ export class QueryEngine {
   private readonly config: AppConfig;
   private readonly client: LlmClient;
 
-  constructor({ config }: QueryEngineConfig) {
+  constructor({ config, client }: QueryEngineConfig) {
     this.config = config;
-    this.client = createLlmClient(config);
+    this.client = client ?? createLlmClient(config);
   }
 
   async *submitMessage(
     session: PersistedChatSession,
     prompt: string,
-  ): AsyncGenerator<PersistedChatSession, PersistedChatSession> {
+  ): AsyncGenerator<QueryEngineStep, PersistedChatSession> {
     const nextPrompt = prompt.trim();
     if (!nextPrompt) {
       return session;
@@ -188,12 +236,15 @@ export class QueryEngine {
       ...session.messages,
       userDisplayMessage,
     ]);
-    yield sessionAfterUserMessage;
+    yield {
+      session: sessionAfterUserMessage,
+      persist: true,
+    };
+
     const agentMessages = [
       ...deriveAgentMessagesFromSession(session),
       userAgentMessage,
     ];
-
     let currentSession = updateChatSessionAgentMessages(
       sessionAfterUserMessage,
       agentMessages,
@@ -210,7 +261,10 @@ export class QueryEngine {
           )}`,
         ),
       ]);
-      yield currentSession;
+      yield {
+        session: currentSession,
+        persist: true,
+      };
     }
 
     const queryIterator = query({
@@ -219,12 +273,18 @@ export class QueryEngine {
       messages: agentMessages,
       cwd: getCwd(),
       systemPrompt: RG_CLI_AGENT_SYSTEM_PROMPT,
+      previousResponseId: session.lastResponsesResponseId,
+      useNativeOpenAIResponses: this.config.llmProvider === "openai-compatible" &&
+        this.config.llmWireApi === "responses",
+      reasoningEffort: this.config.llmReasoningEffort,
+      reasoningSummary: this.config.llmReasoningSummary,
       debug: this.config.debug,
     });
 
     let queryResult: Awaited<ReturnType<typeof queryIterator.next>>["value"] | null =
       null;
     let currentAgentMessages = [...agentMessages];
+    let liveThinkingText = "";
 
     while (true) {
       const step = await queryIterator.next();
@@ -232,6 +292,12 @@ export class QueryEngine {
         queryResult = step.value;
         break;
       }
+
+      liveThinkingText = appendLiveThinkingText(
+        liveThinkingText,
+        step.value.reasoningDelta,
+        step.value.reasoningSectionBreak,
+      );
 
       const newAgentMessages = step.value.addedMessages;
       currentAgentMessages = [...currentAgentMessages, ...newAgentMessages];
@@ -253,12 +319,25 @@ export class QueryEngine {
           ...debugMessages,
           ...toolDisplayMessages,
         ]);
-        yield currentSession;
+        yield {
+          session: currentSession,
+          persist: true,
+          liveThinkingText: liveThinkingText || undefined,
+        };
+        continue;
+      }
+
+      if (step.value.reasoningDelta || step.value.reasoningSectionBreak) {
+        yield {
+          session: currentSession,
+          persist: false,
+          liveThinkingText: liveThinkingText || undefined,
+        };
       }
     }
 
     if (!queryResult) {
-      throw new Error("query() 未返回最终结果。");
+      throw new Error("query() did not return a final result.");
     }
 
     const finalNewAgentMessages = queryResult.messages.slice(agentMessages.length);
@@ -271,25 +350,44 @@ export class QueryEngine {
             `[RG_CLI][debug] queryResult\n${JSON.stringify({
               newAgentMessages: finalNewAgentMessages,
               assistantText: queryResult.assistantText,
+              reasoningSummaries: queryResult.reasoningSummaries ?? [],
+              lastResponseId: queryResult.lastResponseId ?? null,
             }, null, 2)}`,
           ),
         ],
       );
-      yield currentSession;
+      yield {
+        session: currentSession,
+        persist: true,
+        liveThinkingText: liveThinkingText || undefined,
+      };
     }
+
     const assistantText = queryResult.assistantText ||
       "工具调用已完成，但模型没有返回额外文本。";
+    const thinkingSummary = joinReasoningSummaries(queryResult.reasoningSummaries);
+    const thinkingMessages = thinkingSummary
+      ? [createThinkingMessage(`思考摘要\n${thinkingSummary}`)]
+      : [];
 
     const finalSession = updateChatSessionMessages(
-      updateChatSessionAgentMessages(currentSession, queryResult.messages),
+      updateChatSessionLastResponsesResponseId(
+        updateChatSessionAgentMessages(currentSession, queryResult.messages),
+        queryResult.lastResponseId ?? currentSession.lastResponsesResponseId,
+      ),
       [
         ...currentSession.messages,
+        ...thinkingMessages,
         ...(assistantText
           ? [createAssistantReply(assistantText)]
           : []),
       ],
     );
-    yield finalSession;
+    yield {
+      session: finalSession,
+      persist: true,
+      liveThinkingText: undefined,
+    };
     return finalSession;
   }
 }

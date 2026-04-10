@@ -22,6 +22,8 @@ const CONFIG_VALUE_FLAGS = new Set([
   "--api-key",
   "--provider",
   "--wire-api",
+  "--reasoning-effort",
+  "--reasoning-summary",
 ]);
 
 function getInlineFlagValue(arg: string, flagName: string): string | undefined {
@@ -105,13 +107,27 @@ export function parseConfigOverrides(argv: string[]): ConfigOverrides {
       continue;
     }
 
+    const inlineReasoningEffort = getInlineFlagValue(arg, "--reasoning-effort");
+    if (inlineReasoningEffort !== undefined) {
+      overrides.llmReasoningEffort = inlineReasoningEffort as AppConfig["llmReasoningEffort"];
+      continue;
+    }
+
+    const inlineReasoningSummary = getInlineFlagValue(arg, "--reasoning-summary");
+    if (inlineReasoningSummary !== undefined) {
+      overrides.llmReasoningSummary = inlineReasoningSummary as AppConfig["llmReasoningSummary"];
+      continue;
+    }
+
     if (
       arg === "--cwd" ||
       arg === "--model" ||
       arg === "--base-url" ||
       arg === "--api-key" ||
       arg === "--provider" ||
-      arg === "--wire-api"
+      arg === "--wire-api" ||
+      arg === "--reasoning-effort" ||
+      arg === "--reasoning-summary"
     ) {
       const nextValue = argv[index + 1];
 
@@ -129,6 +145,10 @@ export function parseConfigOverrides(argv: string[]): ConfigOverrides {
         overrides.llmApiKey = nextValue;
       } else if (arg === "--provider") {
         overrides.llmProvider = nextValue as AppConfig["llmProvider"];
+      } else if (arg === "--reasoning-effort") {
+        overrides.llmReasoningEffort = nextValue as AppConfig["llmReasoningEffort"];
+      } else if (arg === "--reasoning-summary") {
+        overrides.llmReasoningSummary = nextValue as AppConfig["llmReasoningSummary"];
       } else {
         overrides.llmWireApi = nextValue as AppConfig["llmWireApi"];
       }
@@ -163,6 +183,14 @@ function getEnvConfigOverrides(): ConfigOverrides {
     overrides.llmWireApi = process.env.RG_CLI_WIRE_API as AppConfig["llmWireApi"];
   }
 
+  if (process.env.RG_CLI_REASONING_EFFORT) {
+    overrides.llmReasoningEffort = process.env.RG_CLI_REASONING_EFFORT as AppConfig["llmReasoningEffort"];
+  }
+
+  if (process.env.RG_CLI_REASONING_SUMMARY) {
+    overrides.llmReasoningSummary = process.env.RG_CLI_REASONING_SUMMARY as AppConfig["llmReasoningSummary"];
+  }
+
   if (process.env.RG_CLI_API_KEY) {
     overrides.llmApiKey = process.env.RG_CLI_API_KEY;
   } else if (process.env.OPENAI_API_KEY) {
@@ -182,7 +210,7 @@ function getDefaultModelForProvider(
   provider: AppConfig["llmProvider"],
 ): string {
   if (provider === "openai-compatible") {
-    return "gpt-4.1-mini";
+    return "gpt-5.4";
   }
 
   return defaultConfig.model;

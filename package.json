@@ -32,7 +32,9 @@
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build ./src/index.ts --target=node --format=cjs --packages=external --external react-devtools-core --outfile ./dist/cli.cjs",
+    "debug:query": "bun run scripts/debug-query.ts",
     "start": "node ./dist/cli.cjs",
+    "test": "bun test",
     "pack:cli": "npm pack",
     "prepack": "bun run build"
   }
