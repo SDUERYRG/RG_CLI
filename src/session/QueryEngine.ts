@@ -122,6 +122,10 @@ function joinReasoningSummaries(reasoningSummaries: string[] | undefined): strin
   return normalizedSummaries.join("\n\n");
 }
 
+function formatThinkingMessageContent(content: string): string {
+  return `思考摘要\n${content}`;
+}
+
 function appendLiveThinkingText(
   currentText: string,
   reasoningDelta: string | undefined,
@@ -138,6 +142,37 @@ function appendLiveThinkingText(
   }
 
   return nextText;
+}
+
+function mergeThinkingText(
+  currentText: string,
+  reasoningSummaries: string[] | undefined,
+): string {
+  const summaryText = joinReasoningSummaries(reasoningSummaries);
+
+  if (!summaryText) {
+    return currentText;
+  }
+
+  const normalizedCurrent = currentText.trim();
+  const normalizedSummary = summaryText.trim();
+
+  if (!normalizedCurrent) {
+    return normalizedSummary;
+  }
+
+  if (
+    normalizedCurrent === normalizedSummary ||
+    normalizedCurrent.includes(normalizedSummary)
+  ) {
+    return currentText;
+  }
+
+  if (normalizedSummary.includes(normalizedCurrent)) {
+    return normalizedSummary;
+  }
+
+  return normalizedSummary;
 }
 
 function deriveDisplayMessagesFromAgentMessages(
@@ -285,6 +320,8 @@ export class QueryEngine {
       null;
     let currentAgentMessages = [...agentMessages];
     let liveThinkingText = "";
+    let pendingThinkingText = "";
+    let hasPersistedThinkingMessages = false;
 
     while (true) {
       const step = await queryIterator.next();
@@ -298,6 +335,11 @@ export class QueryEngine {
         step.value.reasoningDelta,
         step.value.reasoningSectionBreak,
       );
+      pendingThinkingText = appendLiveThinkingText(
+        pendingThinkingText,
+        step.value.reasoningDelta,
+        step.value.reasoningSectionBreak,
+      );
 
       const newAgentMessages = step.value.addedMessages;
       currentAgentMessages = [...currentAgentMessages, ...newAgentMessages];
@@ -307,6 +349,10 @@ export class QueryEngine {
       const debugMessages = (step.value.debugEntries ?? []).map((entry) =>
         createDebugMessage(entry)
       );
+      pendingThinkingText = mergeThinkingText(
+        pendingThinkingText,
+        step.value.reasoningSummaries,
+      );
 
       currentSession = updateChatSessionAgentMessages(
         currentSession,
@@ -314,10 +360,26 @@ export class QueryEngine {
       );
 
       if (toolDisplayMessages.length > 0 || debugMessages.length > 0) {
+        const thinkingMessages = toolDisplayMessages.length > 0 &&
+            pendingThinkingText.trim()
+          ? [
+            createThinkingMessage(
+              formatThinkingMessageContent(pendingThinkingText.trim()),
+            ),
+          ]
+          : [];
+
+        if (thinkingMessages.length > 0) {
+          pendingThinkingText = "";
+          liveThinkingText = "";
+          hasPersistedThinkingMessages = true;
+        }
+
         currentSession = updateChatSessionMessages(currentSession, [
           ...currentSession.messages,
           ...debugMessages,
           ...toolDisplayMessages,
+          ...thinkingMessages,
         ]);
         yield {
           session: currentSession,
@@ -365,9 +427,14 @@ export class QueryEngine {
 
     const assistantText = queryResult.assistantText ||
       "工具调用已完成，但模型没有返回额外文本。";
-    const thinkingSummary = joinReasoningSummaries(queryResult.reasoningSummaries);
-    const thinkingMessages = thinkingSummary
-      ? [createThinkingMessage(`思考摘要\n${thinkingSummary}`)]
+    const fallbackThinkingSummary = !pendingThinkingText.trim() &&
+        !hasPersistedThinkingMessages
+      ? joinReasoningSummaries(queryResult.reasoningSummaries)
+      : undefined;
+    const finalThinkingMessages = pendingThinkingText.trim()
+      ? [createThinkingMessage(formatThinkingMessageContent(pendingThinkingText.trim()))]
+      : fallbackThinkingSummary
+      ? [createThinkingMessage(formatThinkingMessageContent(fallbackThinkingSummary))]
       : [];
 
     const finalSession = updateChatSessionMessages(
@@ -377,7 +444,7 @@ export class QueryEngine {
       ),
       [
         ...currentSession.messages,
-        ...thinkingMessages,
+        ...finalThinkingMessages,
         ...(assistantText
           ? [createAssistantReply(assistantText)]
           : []),

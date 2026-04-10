@@ -135,26 +135,31 @@ test("query emits reasoning updates before the final assistant message", async (
     reasoningDelta: update.reasoningDelta,
     reasoningSectionBreak: update.reasoningSectionBreak,
     addedMessages: update.addedMessages.length,
+    reasoningSummaries: update.reasoningSummaries,
   }))).toEqual([
     {
       reasoningDelta: "Alpha",
       reasoningSectionBreak: undefined,
       addedMessages: 0,
+      reasoningSummaries: undefined,
     },
     {
       reasoningDelta: undefined,
       reasoningSectionBreak: true,
       addedMessages: 0,
+      reasoningSummaries: undefined,
     },
     {
       reasoningDelta: "Beta",
       reasoningSectionBreak: undefined,
       addedMessages: 0,
+      reasoningSummaries: undefined,
     },
     {
       reasoningDelta: undefined,
       reasoningSectionBreak: undefined,
       addedMessages: 1,
+      reasoningSummaries: ["Alpha", "Beta"],
     },
   ]);
   expect(result.assistantText).toBe("Final answer");

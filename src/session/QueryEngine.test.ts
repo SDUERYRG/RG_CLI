@@ -80,3 +80,99 @@ test("QueryEngine keeps live reasoning out of persisted session snapshots", asyn
   expect(finalSession.lastResponsesResponseId).toBe("resp_final");
   expect(steps.at(-1)?.liveThinkingText).toBeUndefined();
 });
+
+test("QueryEngine interleaves per-turn thinking messages with tool calls", async () => {
+  let turn = 0;
+  const client: LlmClient = {
+    async generateText(_params: GenerateTextParams): Promise<GenerateTextResult> {
+      throw new Error("generateText is not used in this test.");
+    },
+    async generateAssistantTurn(
+      _params: GenerateAssistantTurnParams,
+    ): Promise<GenerateAssistantTurnResult> {
+      throw new Error("blocking fallback should not run");
+    },
+    async *streamAssistantTurn(
+      _params: GenerateAssistantTurnParams,
+    ): AsyncGenerator<AssistantTurnStreamEvent, GenerateAssistantTurnResult> {
+      turn += 1;
+
+      if (turn === 1) {
+        return {
+          blocks: [{
+            type: "tool_use",
+            id: "tool_1",
+            name: "missing_tool_1",
+            input: {},
+          }],
+          reasoningSummaries: ["Thought 1"],
+          responseId: "resp_1",
+        };
+      }
+
+      if (turn === 2) {
+        return {
+          blocks: [{
+            type: "tool_use",
+            id: "tool_2",
+            name: "missing_tool_2",
+            input: {},
+          }],
+          reasoningSummaries: ["Thought 2"],
+          responseId: "resp_2",
+        };
+      }
+
+      return {
+        blocks: [{
+          type: "text",
+          text: "Final answer",
+        }],
+        responseId: "resp_3",
+      };
+    },
+  };
+
+  const engine = new QueryEngine({
+    config: {
+      ...defaultConfig,
+      llmProvider: "openai-compatible",
+      llmWireApi: "responses",
+      model: "gpt-5.4",
+    },
+    client,
+  });
+  const initialSession = createChatSession("D:\\test", [getWelcomeMessage()]);
+
+  let finalSession = initialSession;
+  for await (const step of engine.submitMessage(initialSession, "hello")) {
+    finalSession = step.session;
+  }
+
+  const orderedKinds = finalSession.messages
+    .filter((message) =>
+      message.kind === "tool_call" ||
+      message.kind === "thinking" ||
+      (message.role === "assistant" &&
+        message.kind === undefined &&
+        message.content === "Final answer")
+    )
+    .map((message) => message.kind ?? "assistant");
+
+  expect(orderedKinds).toEqual([
+    "tool_call",
+    "thinking",
+    "tool_call",
+    "thinking",
+    "assistant",
+  ]);
+  expect(
+    finalSession.messages
+      .filter((message) => message.kind === "thinking")
+      .map((message) => message.content),
+  ).toEqual([
+    "思考摘要\nThought 1",
+    "思考摘要\nThought 2",
+  ]);
+  expect(finalSession.lastResponsesResponseId).toBe("resp_3");
+});

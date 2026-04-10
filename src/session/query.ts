@@ -49,6 +49,7 @@ export type QueryUpdate = {
   debugEntries?: string[];
   reasoningDelta?: string;
   reasoningSectionBreak?: boolean;
+  reasoningSummaries?: string[];
 };
 
 function summarizeRawOutputItemTypes(items: unknown[] | undefined): string[] {
@@ -317,9 +318,10 @@ function appendUniqueReasoningSummaries(
   currentSummaries: string[],
   seenSummaries: Set<string>,
   nextSummaries: string[] | undefined,
-): void {
+): string[] {
+  const appendedSummaries: string[] = [];
   if (!nextSummaries) {
-    return;
+    return appendedSummaries;
   }
 
   for (const summary of nextSummaries) {
@@ -330,7 +332,10 @@ function appendUniqueReasoningSummaries(
 
     seenSummaries.add(normalizedSummary);
     currentSummaries.push(normalizedSummary);
+    appendedSummaries.push(normalizedSummary);
   }
+
+  return appendedSummaries;
 }
 
 function isAssistantTurnResultEmpty(result: GenerateAssistantTurnResult): boolean {
@@ -495,7 +500,7 @@ export async function* query(
     }
 
     previousResponseId = assistantTurn.responseId ?? previousResponseId;
-    appendUniqueReasoningSummaries(
+    const newReasoningSummaries = appendUniqueReasoningSummaries(
       reasoningSummaries,
       seenReasoningSummaries,
       assistantTurn.reasoningSummaries,
@@ -526,6 +531,9 @@ export async function* query(
     workingMessages = [...workingMessages, assistantMessage];
     yield {
       addedMessages: [assistantMessage],
+      reasoningSummaries: newReasoningSummaries.length > 0
+        ? newReasoningSummaries
+        : undefined,
     };
 
     const toolUses = extractToolUses(assistantMessage);
