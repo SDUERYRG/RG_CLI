@@ -11,7 +11,7 @@ export type ChatMessage = {
   role: MessageRole;
   content: string;
   includeInContext?: boolean;
-  kind?: "regular" | "tool_call" | "tool_result";
+  kind?: "regular" | "tool_call" | "tool_result" | "debug";
 };
 
 export type AgentMessageRole = "system" | "assistant" | "user";

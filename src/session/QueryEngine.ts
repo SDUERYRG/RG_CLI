@@ -81,6 +81,17 @@ function createToolResultMessage(toolResult: AgentToolResultBlock) {
   );
 }
 
+function createDebugMessage(content: string) {
+  return createMessage(
+    "assistant",
+    content,
+    {
+      includeInContext: false,
+      kind: "debug",
+    },
+  );
+}
+
 function deriveDisplayMessagesFromAgentMessages(
   messages: AgentMessage[],
 ): ReturnType<typeof createMessage>[] {
@@ -110,6 +121,43 @@ function deriveDisplayMessagesFromAgentMessages(
   }
 
   return displayMessages;
+}
+
+function serializeAgentMessageForDebug(message: AgentMessage) {
+  if (typeof message.content === "string") {
+    return {
+      role: message.role,
+      content: message.content,
+    };
+  }
+
+  return {
+    role: message.role,
+    content: message.content.map((block) => {
+      if (block.type === "text") {
+        return {
+          type: "text",
+          text: block.text,
+        };
+      }
+
+      if (block.type === "tool_use") {
+        return {
+          type: "tool_use",
+          id: block.id,
+          name: block.name,
+          input: block.input,
+        };
+      }
+
+      return {
+        type: "tool_result",
+        toolUseId: block.toolUseId,
+        content: block.content,
+        isError: block.isError,
+      };
+    }),
+  };
 }
 
 export class QueryEngine {
@@ -142,7 +190,7 @@ export class QueryEngine {
     ]);
     yield sessionAfterUserMessage;
     const agentMessages = [
-      ...deriveAgentMessagesFromSession(sessionAfterUserMessage),
+      ...deriveAgentMessagesFromSession(session),
       userAgentMessage,
     ];
 
@@ -151,12 +199,27 @@ export class QueryEngine {
       agentMessages,
     );
 
+    if (this.config.debug) {
+      currentSession = updateChatSessionMessages(currentSession, [
+        ...currentSession.messages,
+        createDebugMessage(
+          `[RG_CLI][debug] submitMessage.initialAgentMessages\n${JSON.stringify(
+            agentMessages.map(serializeAgentMessageForDebug),
+            null,
+            2,
+          )}`,
+        ),
+      ]);
+      yield currentSession;
+    }
+
     const queryIterator = query({
       client: this.client,
       model: this.config.model,
       messages: agentMessages,
       cwd: getCwd(),
       systemPrompt: RG_CLI_AGENT_SYSTEM_PROMPT,
+      debug: this.config.debug,
     });
 
     let queryResult: Awaited<ReturnType<typeof queryIterator.next>>["value"] | null =
@@ -175,15 +238,19 @@ export class QueryEngine {
       const toolDisplayMessages = deriveDisplayMessagesFromAgentMessages(
         newAgentMessages,
       );
+      const debugMessages = (step.value.debugEntries ?? []).map((entry) =>
+        createDebugMessage(entry)
+      );
 
       currentSession = updateChatSessionAgentMessages(
         currentSession,
         currentAgentMessages,
       );
 
-      if (toolDisplayMessages.length > 0) {
+      if (toolDisplayMessages.length > 0 || debugMessages.length > 0) {
         currentSession = updateChatSessionMessages(currentSession, [
           ...currentSession.messages,
+          ...debugMessages,
           ...toolDisplayMessages,
         ]);
         yield currentSession;
@@ -196,10 +263,19 @@ export class QueryEngine {
 
     const finalNewAgentMessages = queryResult.messages.slice(agentMessages.length);
     if (this.config.debug) {
-      console.error("[RG_CLI][debug] queryResult", JSON.stringify({
-        newAgentMessages: finalNewAgentMessages,
-        assistantText: queryResult.assistantText,
-      }, null, 2));
+      currentSession = updateChatSessionMessages(
+        updateChatSessionAgentMessages(currentSession, queryResult.messages),
+        [
+          ...currentSession.messages,
+          createDebugMessage(
+            `[RG_CLI][debug] queryResult\n${JSON.stringify({
+              newAgentMessages: finalNewAgentMessages,
+              assistantText: queryResult.assistantText,
+            }, null, 2)}`,
+          ),
+        ],
+      );
+      yield currentSession;
     }
     const assistantText = queryResult.assistantText ||
       "工具调用已完成，但模型没有返回额外文本。";

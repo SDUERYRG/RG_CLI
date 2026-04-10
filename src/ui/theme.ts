@@ -9,4 +9,5 @@ export const theme = {
   secondary: "gray",
   accent: "green",
   warning: "yellow",
+  debug: "magenta",
 } as const;

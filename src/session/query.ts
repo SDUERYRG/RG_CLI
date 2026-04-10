@@ -25,6 +25,7 @@ export type QueryParams = {
   messages: AgentMessage[];
   cwd: string;
   systemPrompt?: string;
+  debug?: boolean;
   signal?: AbortSignal;
 };
 
@@ -35,6 +36,7 @@ export type QueryResult = {
 
 export type QueryUpdate = {
   addedMessages: AgentMessage[];
+  debugEntries?: string[];
 };
 
 function extractToolUses(
@@ -91,6 +93,125 @@ function shouldForceToolUse(userPrompt: string): boolean {
   return /工作目录|cwd|目录|列出|文件|查看|读取|时间|time/i.test(userPrompt);
 }
 
+function stringifyBlockContent(message: AgentMessage): string {
+  if (typeof message.content === "string") {
+    return message.content.trim();
+  }
+
+  const parts: string[] = [];
+  for (const block of message.content) {
+    if (block.type === "text" && block.text.trim()) {
+      parts.push(block.text.trim());
+      continue;
+    }
+
+    if (block.type === "tool_result") {
+      const text = block.content.trim();
+      if (!text) {
+        continue;
+      }
+
+      const shortened = text.length > 300
+        ? `${text.slice(0, 300).trim()}...`
+        : text;
+      parts.push(`工具结果(${block.toolUseId})：${shortened}`);
+    }
+  }
+
+  return parts.join("\n").trim();
+}
+
+function serializeAgentMessageForDebug(message: AgentMessage) {
+  if (typeof message.content === "string") {
+    return {
+      role: message.role,
+      content: message.content,
+    };
+  }
+
+  return {
+    role: message.role,
+    content: message.content.map((block) => {
+      if (block.type === "text") {
+        return {
+          type: "text",
+          text: block.text,
+        };
+      }
+
+      if (block.type === "tool_use") {
+        return {
+          type: "tool_use",
+          id: block.id,
+          name: block.name,
+          input: block.input,
+        };
+      }
+
+      return {
+        type: "tool_result",
+        toolUseId: block.toolUseId,
+        content: block.content,
+        isError: block.isError,
+      };
+    }),
+  };
+}
+
+function buildToolSelectionMessages(
+  messages: AgentMessage[],
+  systemPrompt?: string,
+): AgentMessage[] {
+  const nonSystemMessages = messages.filter((message) => message.role !== "system");
+  const latestUserIndex = [...nonSystemMessages]
+    .map((message, index) => ({ message, index }))
+    .reverse()
+    .find((entry) => entry.message.role === "user")?.index;
+
+  const latestUserMessage = latestUserIndex !== undefined
+    ? nonSystemMessages[latestUserIndex]
+    : undefined;
+  const contextualCandidates = latestUserIndex !== undefined
+    ? nonSystemMessages.slice(0, latestUserIndex)
+    : nonSystemMessages;
+  const tailContext = contextualCandidates.slice(-3);
+
+  const contextualSummary = tailContext
+    .map((message) => {
+      const content = stringifyBlockContent(message);
+      if (!content) {
+        return "";
+      }
+
+      const label = message.role === "user" ? "用户" : "助手";
+      return `${label}：${content}`;
+    })
+    .filter(Boolean)
+    .join("\n\n");
+
+  const lightweightMessages: AgentMessage[] = [];
+
+  if (systemPrompt) {
+    lightweightMessages.push({
+      role: "system" as const,
+      content: systemPrompt,
+    });
+  }
+
+  if (contextualSummary) {
+    lightweightMessages.push({
+      role: "system" as const,
+      content: `最近上下文摘要：\n${contextualSummary}`,
+    });
+  }
+
+  if (latestUserMessage) {
+    lightweightMessages.push(latestUserMessage);
+  }
+
+  return lightweightMessages.length > 0 ? lightweightMessages : messages;
+}
+
 export async function* query(
   params: QueryParams,
 ): AsyncGenerator<QueryUpdate, QueryResult> {
@@ -102,11 +223,28 @@ export async function* query(
   );
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
+    const messagesForToolSelection: AgentMessage[] = iteration === 0
+      ? buildToolSelectionMessages(workingMessages, params.systemPrompt)
+      : (params.systemPrompt
+        ? [{ role: "system" as const, content: params.systemPrompt }, ...workingMessages]
+        : workingMessages);
+
+    if (params.debug) {
+      yield {
+        addedMessages: [],
+        debugEntries: [
+          `[RG_CLI][debug] query.toolSelectionContext\n${JSON.stringify(
+            messagesForToolSelection.map(serializeAgentMessageForDebug),
+            null,
+            2,
+          )}`,
+        ],
+      };
+    }
+
     const assistantTurn = await params.client.generateAssistantTurn({
       model: params.model,
-      messages: params.systemPrompt
-        ? [{ role: "system", content: params.systemPrompt }, ...workingMessages]
-        : workingMessages,
+      messages: messagesForToolSelection,
       tools: tools.map((tool) => ({
         name: tool.name,
         description: tool.description,
@@ -145,6 +283,18 @@ export async function* query(
               "请基于上面的工具结果，直接回答用户原始问题。如果信息已经足够，不要继续调用工具。",
           },
         ];
+        if (params.debug) {
+          yield {
+            addedMessages: [],
+            debugEntries: [
+              `[RG_CLI][debug] query.emptyAnswerRecoveryContext\n${JSON.stringify(
+                workingMessages.map(serializeAgentMessageForDebug),
+                null,
+                2,
+              )}`,
+            ],
+          };
+        }
         continue;
       }
 
