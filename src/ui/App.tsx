@@ -5,14 +5,8 @@
  * 说明：页面状态集中在这里管理，具体展示拆给子组件处理。
  */
 import type { AppConfig } from "../config/defaults.ts";
-import { executeSlashCommand } from "../session/slashCommands.ts";
 import React, { useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
-import { Footer } from "./components/Footer.tsx";
-import { Header } from "./components/Header.tsx";
-import { MessageList } from "./components/MessageList.tsx";
-import { PromptInput } from "./components/PromptInput.tsx";
-import { ThinkingPanel } from "./components/ThinkingPanel.tsx";
 import {
   createAssistantReply,
   createChatSession,
@@ -29,7 +23,14 @@ import {
   updateChatSessionMessages,
 } from "../session/index.ts";
 import type { PersistedChatSession } from "../session/index.ts";
+import { executeSlashCommand } from "../session/slashCommands.ts";
 import { getCwd } from "../shared/cwd.ts";
+import { createSerialTaskQueue } from "../shared/serialTaskQueue.ts";
+import { Footer } from "./components/Footer.tsx";
+import { Header } from "./components/Header.tsx";
+import { MessageList } from "./components/MessageList.tsx";
+import { PromptInput } from "./components/PromptInput.tsx";
+import { ThinkingPanel } from "./components/ThinkingPanel.tsx";
 
 type AppProps = {
   config: AppConfig;
@@ -46,16 +47,19 @@ export function App({ config }: AppProps) {
   const [liveThinkingText, setLiveThinkingText] = useState<string | undefined>();
   const titleGenerationInFlight = useRef(new Set<string>());
   const queryEngineRef = useRef(new QueryEngine({ config }));
+  const persistenceQueueRef = useRef(createSerialTaskQueue());
   const messages = activeSession.messages;
   const sessionTitle = getChatSessionDisplayTitle(activeSession);
   const sessionSummary = getChatSessionDisplaySummary(activeSession);
 
   async function persistSession(session: PersistedChatSession): Promise<void> {
-    try {
-      await saveSessionSnapshot(session);
-    } catch {
-      // 持久化失败不阻断当前聊天流程；后续可以再补专门的错误提示。
-    }
+    await persistenceQueueRef.current.enqueue(async () => {
+      try {
+        await saveSessionSnapshot(session);
+      } catch {
+        // 持久化失败不阻断当前聊天流程；后续可以再补专门的错误提示。
+      }
+    });
   }
 
   function createFreshSession(): PersistedChatSession {
@@ -112,10 +116,12 @@ export function App({ config }: AppProps) {
           return;
         }
 
-        const updatedSession = await saveAiSessionTitleIfNoCustomTitle(
-          session.cwd,
-          session.id,
-          generatedTitle,
+        const updatedSession = await persistenceQueueRef.current.enqueue(() =>
+          saveAiSessionTitleIfNoCustomTitle(
+            session.cwd,
+            session.id,
+            generatedTitle,
+          )
         );
 
         if (!updatedSession) {
@@ -131,7 +137,7 @@ export function App({ config }: AppProps) {
           return updatedSession;
         });
       } catch {
-        // AI 标题生成失败不影响主对话流程
+        // AI 标题生成失败不影响主对话流程。
       } finally {
         titleGenerationInFlight.current.delete(session.id);
       }
@@ -206,7 +212,7 @@ export function App({ config }: AppProps) {
         setActiveSession(step.session);
         setLiveThinkingText(step.liveThinkingText);
         if (step.persist) {
-          void persistSession(step.session);
+          await persistSession(step.session);
         }
       }
       maybeGenerateAiTitle(latestSession);
@@ -243,13 +249,12 @@ export function App({ config }: AppProps) {
     void submitUserMessage(value);
   }
 
-
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
       <Header />
       <Box flexDirection="column" marginBottom={1}>
-        <Text bold>当前会话：{sessionTitle}</Text>
-        <Text dimColor>摘要：{sessionSummary}</Text>
+        <Text bold>{`当前会话：${sessionTitle}`}</Text>
+        <Text dimColor>{`摘要：${sessionSummary}`}</Text>
       </Box>
       <MessageList messages={messages} />
       <ThinkingPanel text={liveThinkingText} isLoading={isLoading} />

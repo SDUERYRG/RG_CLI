@@ -4,7 +4,11 @@
  * 作用：维护顶层 CLI 命令注册和执行入口。
  * 说明：当前先提供板块一所需的最小结构，后续再扩展为真正的顶层命令系统。
  */
-import { parseConfigOverrides } from "../config/loadConfig.ts";
+import {
+  configFlagConsumesNextArg,
+  isConfigFlag,
+  parseConfigOverrides,
+} from "../config/loadConfig.ts";
 import { getCwd } from "../shared/cwd.ts";
 import { writeTerminalBlock } from "../shared/terminal.ts";
 import type {
@@ -75,18 +79,33 @@ export function getTopLevelCommandSummaries(): Array<
 }
 
 function parseTopLevelCliAction(argv: string[]): TopLevelCliAction {
-  const [firstArg, ...restArgs] = argv;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
 
-  if (!firstArg || firstArg.startsWith("-")) {
+    if (!arg) {
+      continue;
+    }
+
+    if (isConfigFlag(arg)) {
+      if (configFlagConsumesNextArg(arg) && !arg.includes("=")) {
+        index += 1;
+      }
+      continue;
+    }
+
+    if (arg.startsWith("-")) {
+      continue;
+    }
+
+    if (arg === "chat" || arg === "config") {
+      return {
+        type: "command",
+        name: arg,
+        args: argv.slice(index + 1),
+      };
+    }
+
     return { type: "none" };
-  }
-
-  if (firstArg === "chat" || firstArg === "config") {
-    return {
-      type: "command",
-      name: firstArg,
-      args: restArgs,
-    };
   }
 
   return { type: "none" };

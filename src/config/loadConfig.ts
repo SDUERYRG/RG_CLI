@@ -14,6 +14,28 @@ import { isEnvTruthy } from "../utils/envUtils.ts";
 
 export type ConfigOverrides = Partial<AppConfig>;
 
+const VALID_LLM_PROVIDERS = [
+  "anthropic-compatible",
+  "openai-compatible",
+] as const;
+const VALID_LLM_WIRE_APIS = [
+  "messages",
+  "responses",
+  "chat.completions",
+] as const;
+const VALID_REASONING_EFFORTS = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] as const;
+const VALID_REASONING_SUMMARIES = [
+  "auto",
+  "concise",
+  "detailed",
+] as const;
+
 const CONFIG_BOOLEAN_FLAGS = new Set(["--debug"]);
 const CONFIG_VALUE_FLAGS = new Set([
   "--cwd",
@@ -56,6 +78,93 @@ export function isConfigFlag(arg: string): boolean {
   return false;
 }
 
+export function configFlagConsumesNextArg(arg: string): boolean {
+  return CONFIG_VALUE_FLAGS.has(arg);
+}
+
+function parseEnumValue<TValue extends string>(
+  value: string,
+  validValues: readonly TValue[],
+  label: string,
+): TValue {
+  if (validValues.includes(value as TValue)) {
+    return value as TValue;
+  }
+
+  throw new Error(
+    `${label} must be one of: ${validValues.join(", ")}. Received: ${value}`,
+  );
+}
+
+function requireFlagValue(flagName: string, value: string | undefined): string {
+  if (!value || value.startsWith("-")) {
+    throw new Error(`Flag ${flagName} requires a value.`);
+  }
+
+  return value;
+}
+
+function assignConfigValueOverride(
+  flagName: string,
+  rawValue: string,
+  overrides: ConfigOverrides,
+): void {
+  const value = rawValue.trim();
+
+  if (flagName === "--cwd") {
+    overrides.cwd = value;
+    return;
+  }
+
+  if (flagName === "--model") {
+    overrides.model = value;
+    return;
+  }
+
+  if (flagName === "--base-url") {
+    overrides.llmBaseUrl = value;
+    return;
+  }
+
+  if (flagName === "--api-key") {
+    overrides.llmApiKey = value;
+    return;
+  }
+
+  if (flagName === "--provider") {
+    overrides.llmProvider = parseEnumValue(
+      value,
+      VALID_LLM_PROVIDERS,
+      "Flag --provider",
+    );
+    return;
+  }
+
+  if (flagName === "--wire-api") {
+    overrides.llmWireApi = parseEnumValue(
+      value,
+      VALID_LLM_WIRE_APIS,
+      "Flag --wire-api",
+    );
+    return;
+  }
+
+  if (flagName === "--reasoning-effort") {
+    overrides.llmReasoningEffort = parseEnumValue(
+      value,
+      VALID_REASONING_EFFORTS,
+      "Flag --reasoning-effort",
+    );
+    return;
+  }
+
+  overrides.llmReasoningSummary = parseEnumValue(
+    value,
+    VALID_REASONING_SUMMARIES,
+    "Flag --reasoning-summary",
+  );
+}
+
 export function parseConfigOverrides(argv: string[]): ConfigOverrides {
   const overrides: ConfigOverrides = {};
 
@@ -71,88 +180,25 @@ export function parseConfigOverrides(argv: string[]): ConfigOverrides {
       continue;
     }
 
-    const inlineCwd = getInlineFlagValue(arg, "--cwd");
-    if (inlineCwd !== undefined) {
-      overrides.cwd = inlineCwd;
-      continue;
-    }
-
-    const inlineModel = getInlineFlagValue(arg, "--model");
-    if (inlineModel !== undefined) {
-      overrides.model = inlineModel;
-      continue;
-    }
-
-    const inlineBaseUrl = getInlineFlagValue(arg, "--base-url");
-    if (inlineBaseUrl !== undefined) {
-      overrides.llmBaseUrl = inlineBaseUrl;
-      continue;
-    }
-
-    const inlineApiKey = getInlineFlagValue(arg, "--api-key");
-    if (inlineApiKey !== undefined) {
-      overrides.llmApiKey = inlineApiKey;
-      continue;
-    }
-
-    const inlineProvider = getInlineFlagValue(arg, "--provider");
-    if (inlineProvider !== undefined) {
-      overrides.llmProvider = inlineProvider as AppConfig["llmProvider"];
-      continue;
-    }
-
-    const inlineWireApi = getInlineFlagValue(arg, "--wire-api");
-    if (inlineWireApi !== undefined) {
-      overrides.llmWireApi = inlineWireApi as AppConfig["llmWireApi"];
-      continue;
-    }
-
-    const inlineReasoningEffort = getInlineFlagValue(arg, "--reasoning-effort");
-    if (inlineReasoningEffort !== undefined) {
-      overrides.llmReasoningEffort = inlineReasoningEffort as AppConfig["llmReasoningEffort"];
-      continue;
-    }
-
-    const inlineReasoningSummary = getInlineFlagValue(arg, "--reasoning-summary");
-    if (inlineReasoningSummary !== undefined) {
-      overrides.llmReasoningSummary = inlineReasoningSummary as AppConfig["llmReasoningSummary"];
-      continue;
-    }
-
-    if (
-      arg === "--cwd" ||
-      arg === "--model" ||
-      arg === "--base-url" ||
-      arg === "--api-key" ||
-      arg === "--provider" ||
-      arg === "--wire-api" ||
-      arg === "--reasoning-effort" ||
-      arg === "--reasoning-summary"
-    ) {
-      const nextValue = argv[index + 1];
-
-      if (!nextValue) {
-        throw new Error(`Flag ${arg} requires a value.`);
+    let handledInlineValue = false;
+    for (const flagName of CONFIG_VALUE_FLAGS) {
+      const inlineValue = getInlineFlagValue(arg, flagName);
+      if (inlineValue === undefined) {
+        continue;
       }
 
-      if (arg === "--cwd") {
-        overrides.cwd = nextValue;
-      } else if (arg === "--model") {
-        overrides.model = nextValue;
-      } else if (arg === "--base-url") {
-        overrides.llmBaseUrl = nextValue;
-      } else if (arg === "--api-key") {
-        overrides.llmApiKey = nextValue;
-      } else if (arg === "--provider") {
-        overrides.llmProvider = nextValue as AppConfig["llmProvider"];
-      } else if (arg === "--reasoning-effort") {
-        overrides.llmReasoningEffort = nextValue as AppConfig["llmReasoningEffort"];
-      } else if (arg === "--reasoning-summary") {
-        overrides.llmReasoningSummary = nextValue as AppConfig["llmReasoningSummary"];
-      } else {
-        overrides.llmWireApi = nextValue as AppConfig["llmWireApi"];
-      }
+      assignConfigValueOverride(flagName, inlineValue, overrides);
+      handledInlineValue = true;
+      break;
+    }
 
+    if (handledInlineValue) {
+      continue;
+    }
+
+    if (configFlagConsumesNextArg(arg)) {
+      const nextValue = requireFlagValue(arg, argv[index + 1]);
+      assignConfigValueOverride(arg, nextValue, overrides);
       index += 1;
     }
   }
@@ -176,19 +222,35 @@ function getEnvConfigOverrides(): ConfigOverrides {
   }
 
   if (process.env.RG_CLI_PROVIDER) {
-    overrides.llmProvider = process.env.RG_CLI_PROVIDER as AppConfig["llmProvider"];
+    overrides.llmProvider = parseEnumValue(
+      process.env.RG_CLI_PROVIDER,
+      VALID_LLM_PROVIDERS,
+      "Environment variable RG_CLI_PROVIDER",
+    );
   }
 
   if (process.env.RG_CLI_WIRE_API) {
-    overrides.llmWireApi = process.env.RG_CLI_WIRE_API as AppConfig["llmWireApi"];
+    overrides.llmWireApi = parseEnumValue(
+      process.env.RG_CLI_WIRE_API,
+      VALID_LLM_WIRE_APIS,
+      "Environment variable RG_CLI_WIRE_API",
+    );
   }
 
   if (process.env.RG_CLI_REASONING_EFFORT) {
-    overrides.llmReasoningEffort = process.env.RG_CLI_REASONING_EFFORT as AppConfig["llmReasoningEffort"];
+    overrides.llmReasoningEffort = parseEnumValue(
+      process.env.RG_CLI_REASONING_EFFORT,
+      VALID_REASONING_EFFORTS,
+      "Environment variable RG_CLI_REASONING_EFFORT",
+    );
   }
 
   if (process.env.RG_CLI_REASONING_SUMMARY) {
-    overrides.llmReasoningSummary = process.env.RG_CLI_REASONING_SUMMARY as AppConfig["llmReasoningSummary"];
+    overrides.llmReasoningSummary = parseEnumValue(
+      process.env.RG_CLI_REASONING_SUMMARY,
+      VALID_REASONING_SUMMARIES,
+      "Environment variable RG_CLI_REASONING_SUMMARY",
+    );
   }
 
   if (process.env.RG_CLI_API_KEY) {

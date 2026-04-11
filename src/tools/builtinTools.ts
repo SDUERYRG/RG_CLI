@@ -9,6 +9,24 @@ import { isAbsolute, join, normalize } from "node:path";
 import { z } from "zod";
 import type { ToolDefinition } from "./types.ts";
 
+function padNumber(value: number, width = 2): string {
+  return value.toString().padStart(width, "0");
+}
+
+function formatLocalDateTime(date: Date): string {
+  const offsetMinutes = -date.getTimezoneOffset();
+  const offsetSign = offsetMinutes >= 0 ? "+" : "-";
+  const absoluteOffsetMinutes = Math.abs(offsetMinutes);
+  const offsetHours = Math.floor(absoluteOffsetMinutes / 60);
+  const remainingOffsetMinutes = absoluteOffsetMinutes % 60;
+
+  return [
+    `${date.getFullYear()}-${padNumber(date.getMonth() + 1)}-${padNumber(date.getDate())}`,
+    `T${padNumber(date.getHours())}:${padNumber(date.getMinutes())}:${padNumber(date.getSeconds())}.${padNumber(date.getMilliseconds(), 3)}`,
+    `${offsetSign}${padNumber(offsetHours)}:${padNumber(remainingOffsetMinutes)}`,
+  ].join("");
+}
+
 function resolvePathFromCwd(cwd: string, inputPath?: string): string {
   if (!inputPath || inputPath.trim().length === 0) {
     return cwd;
@@ -29,7 +47,7 @@ const getCurrentTimeTool: ToolDefinition<Record<string, never>> = {
   },
   async execute() {
     return {
-      content: new Date().toISOString(),
+      content: formatLocalDateTime(new Date()),
     };
   },
 };

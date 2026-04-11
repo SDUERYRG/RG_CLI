@@ -176,3 +176,101 @@ test("QueryEngine interleaves per-turn thinking messages with tool calls", async
   ]);
   expect(finalSession.lastResponsesResponseId).toBe("resp_3");
 });
+
+test("QueryEngine preserves assistant text that accompanies a tool call", async () => {
+  let turn = 0;
+  const client: LlmClient = {
+    async generateText(_params: GenerateTextParams): Promise<GenerateTextResult> {
+      throw new Error("generateText is not used in this test.");
+    },
+    async generateAssistantTurn(
+      _params: GenerateAssistantTurnParams,
+    ): Promise<GenerateAssistantTurnResult> {
+      throw new Error("blocking fallback should not run");
+    },
+    async *streamAssistantTurn(
+      _params: GenerateAssistantTurnParams,
+    ): AsyncGenerator<AssistantTurnStreamEvent, GenerateAssistantTurnResult> {
+      turn += 1;
+
+      if (turn === 1) {
+        return {
+          blocks: [
+            {
+              type: "text",
+              text: "Let me inspect that first.",
+            },
+            {
+              type: "tool_use",
+              id: "tool_1",
+              name: "missing_tool_1",
+              input: {},
+            },
+          ],
+          responseId: "resp_1",
+        };
+      }
+
+      return {
+        blocks: [{
+          type: "text",
+          text: "Final answer",
+        }],
+        responseId: "resp_2",
+      };
+    },
+  };
+
+  const engine = new QueryEngine({
+    config: {
+      ...defaultConfig,
+      llmProvider: "openai-compatible",
+      llmWireApi: "responses",
+      model: "gpt-5.4",
+    },
+    client,
+  });
+  const initialSession = createChatSession("D:\\test", [getWelcomeMessage()]);
+
+  let finalSession = initialSession;
+  for await (const step of engine.submitMessage(initialSession, "hello")) {
+    finalSession = step.session;
+  }
+
+  expect(finalSession.messages.map((message) => ({
+    role: message.role,
+    kind: message.kind ?? "regular",
+    content: message.content,
+  }))).toEqual([
+    {
+      role: "assistant",
+      kind: "regular",
+      content: "你好，我是 RG CLI 助手。你可以先输入一条消息试试看。",
+    },
+    {
+      role: "user",
+      kind: "regular",
+      content: "hello",
+    },
+    {
+      role: "assistant",
+      kind: "regular",
+      content: "Let me inspect that first.",
+    },
+    {
+      role: "assistant",
+      kind: "tool_call",
+      content: "调用工具 missing_tool_1\n输入:\n{}",
+    },
+    {
+      role: "assistant",
+      kind: "tool_result",
+      content: "工具执行失败\n未找到工具：missing_tool_1",
+    },
+    {
+      role: "assistant",
+      kind: "regular",
+      content: "Final answer",
+    },
+  ]);
+});

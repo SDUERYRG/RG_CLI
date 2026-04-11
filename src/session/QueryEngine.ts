@@ -186,7 +186,20 @@ function deriveDisplayMessagesFromAgentMessages(
     }
 
     if (message.role === "assistant") {
+      const hasToolUse = message.content.some((block) => block.type === "tool_use");
+
+      if (!hasToolUse) {
+        continue;
+      }
+
       for (const block of message.content) {
+        if (block.type === "text" && block.text.trim()) {
+          displayMessages.push(createAssistantReply(block.text.trim(), {
+            includeInContext: false,
+          }));
+          continue;
+        }
+
         if (block.type === "tool_use") {
           displayMessages.push(createToolCallMessage(block));
         }
