@@ -32,3 +32,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# private interview / resume notes
+RESUME_RG_CLI_EXAMPLES.md
+RG_CLI_INTERVIEW_QA.md

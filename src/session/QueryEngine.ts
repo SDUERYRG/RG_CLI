@@ -46,27 +46,48 @@ function deriveAgentMessagesFromSession(session: PersistedChatSession): AgentMes
   return session.agentMessages ?? [];
 }
 
+const MAX_TOOL_CALL_INPUT_LENGTH = 300;
+const MAX_TOOL_RESULT_LINES = 4;
+
 function formatToolInput(input: Record<string, unknown>): string {
-  const serialized = JSON.stringify(input, null, 2);
-  if (serialized.length <= 300) {
+  const serialized = JSON.stringify(input);
+
+  if (!serialized) {
+    return "{}";
+  }
+
+  if (serialized.length <= MAX_TOOL_CALL_INPUT_LENGTH) {
     return serialized;
   }
 
-  return `${serialized.slice(0, 300).trim()}...`;
+  return `${serialized.slice(0, MAX_TOOL_CALL_INPUT_LENGTH).trim()}...`;
 }
 
 function formatToolResult(content: string): string {
-  if (content.length <= 400) {
-    return content;
+  const normalized = content
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+  const lines = normalized.split("\n");
+
+  while (lines.length > 1 && lines.at(-1) === "") {
+    lines.pop();
   }
 
-  return `${content.slice(0, 400).trim()}...\n\n[工具结果已截断]`;
+  if (lines.length <= MAX_TOOL_RESULT_LINES) {
+    return lines.join("\n");
+  }
+
+  const hiddenLineCount = lines.length - MAX_TOOL_RESULT_LINES;
+  return [
+    ...lines.slice(0, MAX_TOOL_RESULT_LINES),
+    `${hiddenLineCount} lines+`,
+  ].join("\n");
 }
 
 function createToolCallMessage(toolUse: AgentToolUseBlock) {
   return createMessage(
     "assistant",
-    `调用工具 ${toolUse.name}\n输入:\n${formatToolInput(toolUse.input)}`,
+    `调用${toolUse.name}工具，参数${formatToolInput(toolUse.input)}`,
     {
       includeInContext: false,
       kind: "tool_call",
@@ -75,10 +96,9 @@ function createToolCallMessage(toolUse: AgentToolUseBlock) {
 }
 
 function createToolResultMessage(toolResult: AgentToolResultBlock) {
-  const prefix = toolResult.isError ? "工具执行失败" : "工具执行结果";
   return createMessage(
     "assistant",
-    `${prefix}\n${formatToolResult(toolResult.content)}`,
+    formatToolResult(toolResult.content),
     {
       includeInContext: false,
       kind: "tool_result",
@@ -178,8 +198,13 @@ function mergeThinkingText(
 
 function deriveDisplayMessagesFromAgentMessages(
   messages: AgentMessage[],
-): ReturnType<typeof createMessage>[] {
+  pendingToolCallMessages: Map<string, ReturnType<typeof createMessage>>,
+): {
+  displayMessages: ReturnType<typeof createMessage>[];
+  queuedToolCallCount: number;
+} {
   const displayMessages: ReturnType<typeof createMessage>[] = [];
+  let queuedToolCallCount = 0;
 
   for (const message of messages) {
     if (!Array.isArray(message.content)) {
@@ -202,7 +227,8 @@ function deriveDisplayMessagesFromAgentMessages(
         }
 
         if (block.type === "tool_use") {
-          displayMessages.push(createToolCallMessage(block));
+          pendingToolCallMessages.set(block.id, createToolCallMessage(block));
+          queuedToolCallCount += 1;
         }
       }
       continue;
@@ -211,13 +237,21 @@ function deriveDisplayMessagesFromAgentMessages(
     if (message.role === "user") {
       for (const block of message.content) {
         if (block.type === "tool_result") {
+          const pendingToolCallMessage = pendingToolCallMessages.get(block.toolUseId);
+          if (pendingToolCallMessage) {
+            displayMessages.push(pendingToolCallMessage);
+            pendingToolCallMessages.delete(block.toolUseId);
+          }
           displayMessages.push(createToolResultMessage(block));
         }
       }
     }
   }
 
-  return displayMessages;
+  return {
+    displayMessages,
+    queuedToolCallCount,
+  };
 }
 
 function serializeAgentMessageForDebug(message: AgentMessage) {
@@ -336,6 +370,10 @@ export class QueryEngine {
     let liveThinkingText = "";
     let pendingThinkingText = "";
     let hasPersistedThinkingMessages = false;
+    const pendingToolCallMessages = new Map<
+      string,
+      ReturnType<typeof createMessage>
+    >();
 
     while (true) {
       const step = await queryIterator.next();
@@ -357,8 +395,12 @@ export class QueryEngine {
 
       const newAgentMessages = step.value.addedMessages;
       currentAgentMessages = [...currentAgentMessages, ...newAgentMessages];
-      const toolDisplayMessages = deriveDisplayMessagesFromAgentMessages(
+      const {
+        displayMessages: toolDisplayMessages,
+        queuedToolCallCount,
+      } = deriveDisplayMessagesFromAgentMessages(
         newAgentMessages,
+        pendingToolCallMessages,
       );
       const debugMessages = (step.value.debugEntries ?? []).map((entry) =>
         createDebugMessage(entry)
@@ -373,8 +415,8 @@ export class QueryEngine {
         currentAgentMessages,
       );
 
-      if (toolDisplayMessages.length > 0 || debugMessages.length > 0) {
-        const thinkingMessages = toolDisplayMessages.length > 0 &&
+      const thinkingMessages = (toolDisplayMessages.length > 0 ||
+            queuedToolCallCount > 0) &&
             pendingThinkingText.trim()
           ? [
             createThinkingMessage(
@@ -389,6 +431,11 @@ export class QueryEngine {
           hasPersistedThinkingMessages = true;
         }
 
+      if (
+        toolDisplayMessages.length > 0 ||
+        debugMessages.length > 0 ||
+        thinkingMessages.length > 0
+      ) {
         currentSession = updateChatSessionMessages(currentSession, [
           ...currentSession.messages,
           ...debugMessages,
