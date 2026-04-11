@@ -1,0 +1,12 @@
+{
+  "llm": {
+    "provider": "openai-compatible",
+    "baseUrl": "",
+    "apiKey": "",
+    "model": "gpt-5.4",
+    "wireApi": "responses",
+    "reasoningEffort": "xhigh",
+    "reasoningSummary": "auto",
+    "timeoutMs": 300000
+  }
+}

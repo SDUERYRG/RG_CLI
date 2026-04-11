@@ -45,6 +45,12 @@ dist/cli.cjs
 
 ## 运行
 
+配置文件位于（settings.json.origin为示例配置）：
+
+```
+%USERPROFILE%/.rg-cli/settings.json
+```
+
 开发环境运行：
 
 ```bash
