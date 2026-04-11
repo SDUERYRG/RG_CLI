@@ -5,8 +5,8 @@
  * 说明：页面状态集中在这里管理，具体展示拆给子组件处理。
  */
 import type { AppConfig } from "../config/defaults.ts";
-import React, { useRef, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import React, { startTransition, useDeferredValue, useEffect, useRef, useState } from "react";
+import { Box, Text, useApp } from "ink";
 import {
   createAssistantReply,
   createChatSession,
@@ -26,8 +26,10 @@ import type { PersistedChatSession } from "../session/index.ts";
 import { executeSlashCommand } from "../session/slashCommands.ts";
 import { getCwd } from "../shared/cwd.ts";
 import { createSerialTaskQueue } from "../shared/serialTaskQueue.ts";
-import { Footer } from "./components/Footer.tsx";
-import { Header } from "./components/Header.tsx";
+import {
+  formatLiveThinkingDisplayText,
+  LIVE_THINKING_UPDATE_INTERVAL_MS,
+} from "./liveThinking.ts";
 import { MessageList } from "./components/MessageList.tsx";
 import { PromptInput } from "./components/PromptInput.tsx";
 import { ThinkingPanel } from "./components/ThinkingPanel.tsx";
@@ -39,7 +41,6 @@ type AppProps = {
 export function App({ config }: AppProps) {
   const { exit } = useApp();
   const cwd = getCwd();
-  const [query, setQuery] = useState("");
   const [activeSession, setActiveSession] = useState<PersistedChatSession>(() =>
     createChatSession(cwd, [getWelcomeMessage()])
   );
@@ -48,9 +49,64 @@ export function App({ config }: AppProps) {
   const titleGenerationInFlight = useRef(new Set<string>());
   const queryEngineRef = useRef(new QueryEngine({ config }));
   const persistenceQueueRef = useRef(createSerialTaskQueue());
+  const pendingLiveThinkingTextRef = useRef<string | undefined>();
+  const liveThinkingFlushTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  const lastLiveThinkingFlushAtRef = useRef(0);
   const messages = activeSession.messages;
   const sessionTitle = getChatSessionDisplayTitle(activeSession);
   const sessionSummary = getChatSessionDisplaySummary(activeSession);
+  const deferredMessages = useDeferredValue(messages);
+
+  function flushLiveThinkingText() {
+    if (liveThinkingFlushTimerRef.current) {
+      clearTimeout(liveThinkingFlushTimerRef.current);
+      liveThinkingFlushTimerRef.current = undefined;
+    }
+
+    lastLiveThinkingFlushAtRef.current = Date.now();
+    const nextText = pendingLiveThinkingTextRef.current;
+    startTransition(() => {
+      setLiveThinkingText(nextText);
+    });
+  }
+
+  function scheduleLiveThinkingText(
+    text: string | undefined,
+    options: { immediate?: boolean } = {},
+  ) {
+    pendingLiveThinkingTextRef.current = formatLiveThinkingDisplayText(text);
+
+    if (options.immediate) {
+      flushLiveThinkingText();
+      return;
+    }
+
+    const elapsed = Date.now() - lastLiveThinkingFlushAtRef.current;
+    const remaining = LIVE_THINKING_UPDATE_INTERVAL_MS - elapsed;
+
+    if (remaining <= 0) {
+      flushLiveThinkingText();
+      return;
+    }
+
+    if (liveThinkingFlushTimerRef.current) {
+      return;
+    }
+
+    liveThinkingFlushTimerRef.current = setTimeout(() => {
+      flushLiveThinkingText();
+    }, remaining);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (liveThinkingFlushTimerRef.current) {
+        clearTimeout(liveThinkingFlushTimerRef.current);
+      }
+    };
+  }, []);
 
   async function persistSession(session: PersistedChatSession): Promise<void> {
     await persistenceQueueRef.current.enqueue(async () => {
@@ -69,18 +125,8 @@ export function App({ config }: AppProps) {
   function replaceActiveSession(session: PersistedChatSession): void {
     syncMessageIdSequence(session.messages);
     setActiveSession(session);
-    setQuery("");
-    setLiveThinkingText(undefined);
+    scheduleLiveThinkingText(undefined, { immediate: true });
   }
-
-  useInput((input, key) => {
-    const wantsToExit = (query.length === 0 && input.toLowerCase() === "q") ||
-      (key.ctrl && input === "c");
-
-    if (wantsToExit) {
-      exit();
-    }
-  });
 
   function maybeGenerateAiTitle(session: PersistedChatSession): void {
     const contextualMessages = session.messages.filter((message) =>
@@ -193,14 +239,11 @@ export function App({ config }: AppProps) {
       if (slashResult.type === "exit") {
         exit();
       }
-
-      setQuery("");
       return;
     }
 
-    setQuery("");
     setIsLoading(true);
-    setLiveThinkingText(undefined);
+    scheduleLiveThinkingText(undefined, { immediate: true });
     let latestSession = activeSession;
 
     try {
@@ -208,9 +251,19 @@ export function App({ config }: AppProps) {
         activeSession,
         nextValue,
       )) {
+        const sessionChanged = latestSession !== step.session;
         latestSession = step.session;
-        setActiveSession(step.session);
-        setLiveThinkingText(step.liveThinkingText);
+
+        if (sessionChanged) {
+          startTransition(() => {
+            setActiveSession(step.session);
+          });
+        }
+
+        scheduleLiveThinkingText(step.liveThinkingText, {
+          immediate: step.persist || step.liveThinkingText === undefined,
+        });
+
         if (step.persist) {
           await persistSession(step.session);
         }
@@ -237,11 +290,11 @@ export function App({ config }: AppProps) {
       );
 
       setActiveSession(sessionAfterFailureReply);
-      setLiveThinkingText(undefined);
+      scheduleLiveThinkingText(undefined, { immediate: true });
       await persistSession(sessionAfterFailureReply);
     } finally {
       setIsLoading(false);
-      setLiveThinkingText(undefined);
+      scheduleLiveThinkingText(undefined, { immediate: true });
     }
   }
 
@@ -251,20 +304,26 @@ export function App({ config }: AppProps) {
 
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
-      <Header />
       <Box flexDirection="column" marginBottom={1}>
-        <Text bold>{`当前会话：${sessionTitle}`}</Text>
+        <Box justifyContent="space-between">
+          <Text bold>{`当前会话：${sessionTitle}`}</Text>
+          <Text dimColor>
+            按 <Text color="blueBright" bold>Q</Text> 退出，或按{" "}
+            <Text color="blueBright" bold>Ctrl+C</Text> 强制退出
+          </Text>
+        </Box>
         <Text dimColor>{`摘要：${sessionSummary}`}</Text>
       </Box>
-      <MessageList messages={messages} />
+      <MessageList
+        messages={deferredMessages}
+        transcriptKey={activeSession.id}
+      />
       <ThinkingPanel text={liveThinkingText} isLoading={isLoading} />
       <PromptInput
-        value={query}
-        onChange={setQuery}
         onSubmit={handleSubmit}
+        onExitRequest={exit}
         isBusy={isLoading}
       />
-      <Footer isLoading={isLoading} />
     </Box>
   );
 }

@@ -67,6 +67,7 @@ test("QueryEngine keeps live reasoning out of persisted session snapshots", asyn
   const nonPersistentSteps = steps.filter((step) => !step.persist);
   expect(nonPersistentSteps).toHaveLength(1);
   expect(nonPersistentSteps[0]?.liveThinkingText).toBe("Live planning");
+  expect(nonPersistentSteps[0]?.session.messages).toBe(steps[0]?.session.messages);
 
   const persistentStepsBeforeFinal = steps.filter((step, index) =>
     step.persist && index < steps.length - 1

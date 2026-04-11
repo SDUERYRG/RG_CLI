@@ -410,10 +410,12 @@ export class QueryEngine {
         step.value.reasoningSummaries,
       );
 
-      currentSession = updateChatSessionAgentMessages(
-        currentSession,
-        currentAgentMessages,
-      );
+      if (newAgentMessages.length > 0) {
+        currentSession = updateChatSessionAgentMessages(
+          currentSession,
+          currentAgentMessages,
+        );
+      }
 
       const thinkingMessages = (toolDisplayMessages.length > 0 ||
             queuedToolCallCount > 0) &&

@@ -389,33 +389,36 @@ export function updateChatSessionAiTitle(
   session: PersistedChatSession,
   aiTitle: string | undefined,
 ): PersistedChatSession {
-  return withDerivedSessionMetadata({
+  return {
     ...session,
+    version: 4,
     aiTitle,
     updatedAt: new Date().toISOString(),
-  });
+  };
 }
 
 export function updateChatSessionAgentMessages(
   session: PersistedChatSession,
   agentMessages: AgentMessage[],
 ): PersistedChatSession {
-  return withDerivedSessionMetadata({
+  return {
     ...session,
+    version: 4,
     agentMessages,
     updatedAt: new Date().toISOString(),
-  });
+  };
 }
 
 export function updateChatSessionLastResponsesResponseId(
   session: PersistedChatSession,
   responseId: string | undefined,
 ): PersistedChatSession {
-  return withDerivedSessionMetadata({
+  return {
     ...session,
+    version: 4,
     lastResponsesResponseId: responseId,
     updatedAt: new Date().toISOString(),
-  });
+  };
 }
 
 export function loadSessionById(
