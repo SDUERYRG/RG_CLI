@@ -10,6 +10,7 @@ let nextMessageId = 1;
 
 type CreateMessageOptions = {
   includeInContext?: boolean;
+  toolCallId?: string;
   kind?: ChatMessage["kind"];
 };
 
@@ -23,6 +24,7 @@ export function createMessage(
     role,
     content,
     includeInContext: options.includeInContext,
+    toolCallId: options.toolCallId,
     kind: options.kind,
   };
 }

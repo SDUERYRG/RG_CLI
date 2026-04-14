@@ -27,3 +27,21 @@ test("reconcileStaticMessages resets when message history is replaced", () => {
     messages: [replacement],
   });
 });
+
+test("reconcileStaticMessages resets when an existing message content changes", () => {
+  const first = createMessage("assistant", "first", {
+    kind: "tool_call",
+    toolCallId: "call_1",
+  });
+  const updatedFirst = {
+    ...first,
+    content: "first\n\nresult",
+  };
+
+  expect(
+    reconcileStaticMessages([first], [updatedFirst]),
+  ).toEqual({
+    mode: "reset",
+    messages: [updatedFirst],
+  });
+});

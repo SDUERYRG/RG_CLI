@@ -99,18 +99,8 @@ function createToolCallMessage(toolUse: AgentToolUseBlock) {
     `调用${toolUse.name}工具，参数${formatToolInput(toolUse.input)}`,
     {
       includeInContext: false,
+      toolCallId: toolUse.id,
       kind: "tool_call",
-    },
-  );
-}
-
-function createToolResultMessage(toolResult: AgentToolResultBlock) {
-  return createMessage(
-    "assistant",
-    formatToolResult(toolResult.content),
-    {
-      includeInContext: false,
-      kind: "tool_result",
     },
   );
 }
@@ -214,10 +204,65 @@ function createPendingThinkingMessage(pendingThinkingText: string) {
   );
 }
 
+function appendToolResultToCallMessageContent(
+  messageContent: string,
+  toolResultContent: string,
+): string {
+  const formattedToolResult = formatToolResult(toolResultContent).trim();
+  if (!formattedToolResult) {
+    return messageContent;
+  }
+
+  const normalizedMessageContent = messageContent.trimEnd();
+  if (normalizedMessageContent.endsWith(formattedToolResult)) {
+    return messageContent;
+  }
+
+  return `${normalizedMessageContent}\n\n${formattedToolResult}`;
+}
+
+function mergeToolResultIntoDisplayMessages(
+  messages: ReturnType<typeof createMessage>[],
+  toolResult: AgentToolResultBlock,
+): ReturnType<typeof createMessage>[] {
+  const actualIndex = messages.findLastIndex((message) =>
+    message.kind === "tool_call" && message.toolCallId === toolResult.toolUseId
+  );
+
+  if (actualIndex === -1) {
+    return [
+      ...messages,
+      createMessage(
+        "assistant",
+        formatToolResult(toolResult.content),
+        {
+          includeInContext: false,
+          toolCallId: toolResult.toolUseId,
+          kind: "tool_result",
+        },
+      ),
+    ];
+  }
+
+  const toolCallMessage = messages[actualIndex]!;
+  const nextToolCallMessage = {
+    ...toolCallMessage,
+    content: appendToolResultToCallMessageContent(
+      toolCallMessage.content,
+      toolResult.content,
+    ),
+  };
+
+  return messages.map((message, index) =>
+    index === actualIndex ? nextToolCallMessage : message
+  );
+}
+
 function deriveDisplayMessagesFromAgentMessages(
   messages: AgentMessage[],
+  currentDisplayMessages: ReturnType<typeof createMessage>[],
 ): ReturnType<typeof createMessage>[] {
-  const displayMessages: ReturnType<typeof createMessage>[] = [];
+  let displayMessages = currentDisplayMessages;
 
   for (const message of messages) {
     if (!Array.isArray(message.content)) {
@@ -232,14 +277,20 @@ function deriveDisplayMessagesFromAgentMessages(
 
       for (const block of message.content) {
         if (block.type === "text" && block.text.trim()) {
-          displayMessages.push(createAssistantReply(block.text.trim(), {
-            includeInContext: false,
-          }));
+          displayMessages = [
+            ...displayMessages,
+            createAssistantReply(block.text.trim(), {
+              includeInContext: false,
+            }),
+          ];
           continue;
         }
 
         if (block.type === "tool_use") {
-          displayMessages.push(createToolCallMessage(block));
+          displayMessages = [
+            ...displayMessages,
+            createToolCallMessage(block),
+          ];
         }
       }
       continue;
@@ -248,7 +299,10 @@ function deriveDisplayMessagesFromAgentMessages(
     if (message.role === "user") {
       for (const block of message.content) {
         if (block.type === "tool_result") {
-          displayMessages.push(createToolResultMessage(block));
+          displayMessages = mergeToolResultIntoDisplayMessages(
+            displayMessages,
+            block,
+          );
         }
       }
     }
@@ -335,6 +389,7 @@ export class QueryEngine {
       sessionAfterUserMessage,
       agentMessages,
     );
+    let currentDisplayMessages = [...currentSession.messages];
 
     if (this.config.debug) {
       currentSession = updateChatSessionMessages(currentSession, [
@@ -347,6 +402,7 @@ export class QueryEngine {
           )}`,
         ),
       ]);
+      currentDisplayMessages = [...currentSession.messages];
       yield {
         session: currentSession,
         persist: true,
@@ -404,6 +460,7 @@ export class QueryEngine {
             ...currentSession.messages,
             thinkingMessage,
           ]);
+          currentDisplayMessages = [...currentSession.messages];
           yield {
             session: currentSession,
             persist: true,
@@ -429,10 +486,14 @@ export class QueryEngine {
 
       const newAgentMessages = step.value.addedMessages;
       currentAgentMessages = [...currentAgentMessages, ...newAgentMessages];
-      const displayMessages = deriveDisplayMessagesFromAgentMessages(newAgentMessages);
+      const displayMessages = deriveDisplayMessagesFromAgentMessages(
+        newAgentMessages,
+        currentDisplayMessages,
+      );
       const debugMessages = (step.value.debugEntries ?? []).map((entry) =>
         createDebugMessage(entry)
       );
+      const displayMessagesChanged = displayMessages !== currentDisplayMessages;
 
       if (newAgentMessages.length > 0) {
         currentSession = updateChatSessionAgentMessages(
@@ -453,6 +514,7 @@ export class QueryEngine {
             ...currentSession.messages,
             thinkingMessage,
           ]);
+          currentDisplayMessages = [...currentSession.messages];
           yield {
             session: currentSession,
             persist: true,
@@ -464,7 +526,7 @@ export class QueryEngine {
 
       if (
         pendingThinkingText.trim() &&
-        (displayMessages.length > 0 || debugMessages.length > 0)
+        (displayMessagesChanged || debugMessages.length > 0)
       ) {
         const thinkingMessage = createPendingThinkingMessage(pendingThinkingText);
         if (thinkingMessage) {
@@ -476,6 +538,7 @@ export class QueryEngine {
             ...currentSession.messages,
             thinkingMessage,
           ]);
+          currentDisplayMessages = [...currentSession.messages];
           yield {
             session: currentSession,
             persist: true,
@@ -490,6 +553,7 @@ export class QueryEngine {
           ...currentSession.messages,
           ...debugMessages,
         ]);
+        currentDisplayMessages = [...currentSession.messages];
         yield {
           session: currentSession,
           persist: true,
@@ -498,10 +562,17 @@ export class QueryEngine {
         };
       }
 
-      if (displayMessages.length > 0) {
+      const nextDisplayMessages = displayMessagesChanged
+        ? deriveDisplayMessagesFromAgentMessages(
+          newAgentMessages,
+          currentDisplayMessages,
+        )
+        : currentDisplayMessages;
+
+      if (nextDisplayMessages !== currentDisplayMessages) {
+        currentDisplayMessages = nextDisplayMessages;
         currentSession = updateChatSessionMessages(currentSession, [
-          ...currentSession.messages,
-          ...displayMessages,
+          ...nextDisplayMessages,
         ]);
         yield {
           session: currentSession,
@@ -542,6 +613,7 @@ export class QueryEngine {
           ),
         ],
       );
+      currentDisplayMessages = [...currentSession.messages];
       yield {
         session: currentSession,
         persist: true,
@@ -577,6 +649,7 @@ export class QueryEngine {
         ...currentSession.messages,
         finalThinkingMessage,
       ]);
+      currentDisplayMessages = [...currentSession.messages];
       yield {
         session: currentSession,
         persist: true,
@@ -590,6 +663,7 @@ export class QueryEngine {
         ...currentSession.messages,
         createAssistantReply(assistantText),
       ]);
+      currentDisplayMessages = [...currentSession.messages];
       yield {
         session: currentSession,
         persist: true,

@@ -32,7 +32,13 @@ export function reconcileStaticMessages(
   }
 
   for (const [index, previousMessage] of previousMessages.entries()) {
-    if (nextMessages[index]?.id !== previousMessage.id) {
+    const nextMessage = nextMessages[index];
+    if (
+      nextMessage?.id !== previousMessage.id ||
+      nextMessage.kind !== previousMessage.kind ||
+      nextMessage.content !== previousMessage.content ||
+      nextMessage.toolCallId !== previousMessage.toolCallId
+    ) {
       return {
         mode: "reset",
         messages: nextMessages,
@@ -97,6 +103,7 @@ export const MessageList = React.memo(function MessageList({
 }: MessageListProps) {
   const sessionKey = transcriptKey ?? "default";
   const [staticMessages, setStaticMessages] = useState<ChatMessage[]>(() => messages);
+  const [staticResetVersion, setStaticResetVersion] = useState(0);
   const staticMessagesRef = useRef(staticMessages);
 
   useLayoutEffect(() => {
@@ -109,6 +116,7 @@ export const MessageList = React.memo(function MessageList({
     if (reconciliation.mode === "reset") {
       staticMessagesRef.current = reconciliation.messages;
       setStaticMessages(reconciliation.messages);
+      setStaticResetVersion((currentVersion) => currentVersion + 1);
       return;
     }
 
@@ -123,7 +131,7 @@ export const MessageList = React.memo(function MessageList({
   return (
     <Box key={sessionKey} flexDirection="column">
       <Header />
-      <Static items={staticMessages}>
+      <Static key={`${sessionKey}:${staticResetVersion}`} items={staticMessages}>
         {(message) => <MessageItem key={message.id} message={message} />}
       </Static>
     </Box>

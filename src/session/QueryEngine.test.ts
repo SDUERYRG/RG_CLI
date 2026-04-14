@@ -272,7 +272,6 @@ test("QueryEngine interleaves per-turn thinking messages with tool calls", async
   const orderedKinds = finalSession.messages
     .filter((message) =>
       message.kind === "tool_call" ||
-      message.kind === "tool_result" ||
       message.kind === "thinking" ||
       (message.role === "assistant" &&
         message.kind === undefined &&
@@ -283,10 +282,8 @@ test("QueryEngine interleaves per-turn thinking messages with tool calls", async
   expect(orderedKinds).toEqual([
     "thinking",
     "tool_call",
-    "tool_result",
     "thinking",
     "tool_call",
-    "tool_result",
     "assistant",
   ]);
 
@@ -346,13 +343,17 @@ test("QueryEngine persists tool calls before their results", async () => {
   }
 
   const toolCallStepIndex = steps.findIndex((step) =>
-    step.persist && step.session.messages.at(-1)?.kind === "tool_call"
+    step.persist &&
+      step.session.messages.at(-1)?.kind === "tool_call" &&
+      !step.session.messages.at(-1)?.content.includes("\n\n")
   );
-  const toolResultStepIndex = steps.findIndex((step) =>
-    step.persist && step.session.messages.at(-1)?.kind === "tool_result"
+  const toolMergedStepIndex = steps.findIndex((step) =>
+    step.persist &&
+      step.session.messages.at(-1)?.kind === "tool_call" &&
+      step.session.messages.at(-1)?.content.includes("\n\n")
   );
   expect(toolCallStepIndex).toBeGreaterThan(0);
-  expect(toolResultStepIndex).toBeGreaterThan(toolCallStepIndex);
+  expect(toolMergedStepIndex).toBeGreaterThan(toolCallStepIndex);
 });
 
 test("QueryEngine renders multiple tool calls before their streamed results", async () => {
@@ -410,18 +411,13 @@ test("QueryEngine renders multiple tool calls before their streamed results", as
   }
 
   const toolMessages = finalSession.messages.filter((message) =>
-    message.kind === "tool_call" || message.kind === "tool_result"
+    message.kind === "tool_call"
   );
-  expect(toolMessages.map((message) => message.kind)).toEqual([
-    "tool_call",
-    "tool_call",
-    "tool_result",
-    "tool_result",
-  ]);
+  expect(toolMessages).toHaveLength(2);
   expect(toolMessages[0]?.content).toContain("missing_tool_1");
   expect(toolMessages[1]?.content).toContain("missing_tool_2");
-  expect(toolMessages[2]?.content).toContain("missing_tool_1");
-  expect(toolMessages[3]?.content).toContain("missing_tool_2");
+  expect(toolMessages[0]?.content).toContain("\n\n");
+  expect(toolMessages[1]?.content).toContain("\n\n");
 });
 
 test("QueryEngine preserves assistant text that accompanies a tool call", async () => {
@@ -482,9 +478,8 @@ test("QueryEngine preserves assistant text that accompanies a tool call", async 
   expect(finalSession.messages[2]?.content).toBe("Let me inspect that first.");
   expect(finalSession.messages[3]?.kind).toBe("tool_call");
   expect(finalSession.messages[3]?.content).toContain("missing_tool_1");
-  expect(finalSession.messages[4]?.kind).toBe("tool_result");
-  expect(finalSession.messages[4]?.content).toContain("missing_tool_1");
-  expect(finalSession.messages[5]?.content).toBe("Final answer");
+  expect(finalSession.messages[3]?.content).toContain("\n\n");
+  expect(finalSession.messages[4]?.content).toBe("Final answer");
 });
 
 test("QueryEngine renders tool calls inline and truncates tool results to four lines", async () => {
@@ -560,15 +555,11 @@ test("QueryEngine renders tool calls inline and truncates tool results to four l
     )?.content;
     expect(toolCallContent).toContain("list_directory");
     expect(toolCallContent).toContain(`"path":"${directoryName}"`);
-
-    const toolResultContent = finalSession.messages.find((message) =>
-      message.kind === "tool_result"
-    )?.content;
-    expect(toolResultContent).toContain(targetDirectory);
-    expect(toolResultContent).toContain("[FILE] alpha.txt");
-    expect(toolResultContent).toContain("[FILE] bravo.txt");
-    expect(toolResultContent).toContain("[FILE] charlie.txt");
-    expect(toolResultContent).toContain("3 lines+");
+    expect(toolCallContent).toContain(targetDirectory);
+    expect(toolCallContent).toContain("[FILE] alpha.txt");
+    expect(toolCallContent).toContain("[FILE] bravo.txt");
+    expect(toolCallContent).toContain("[FILE] charlie.txt");
+    expect(toolCallContent).toContain("3 lines+");
   } finally {
     setCwd(originalCwd);
     await rm(tempRoot, { recursive: true, force: true });

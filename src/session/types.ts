@@ -11,6 +11,7 @@ export type ChatMessage = {
   role: MessageRole;
   content: string;
   includeInContext?: boolean;
+  toolCallId?: string;
   kind?: "regular" | "tool_call" | "tool_result" | "debug" | "thinking";
 };
 
