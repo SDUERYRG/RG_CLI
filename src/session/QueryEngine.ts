@@ -147,27 +147,21 @@ function formatThinkingMessageContent(content: string): string {
   return `思考摘要\n${content}`;
 }
 
-function appendLiveThinkingText(
+function appendThinkingDelta(
   currentText: string,
   reasoningDelta: string | undefined,
-  reasoningSectionBreak: boolean | undefined,
 ): string {
-  let nextText = currentText;
-
-  if (reasoningSectionBreak && nextText.trim()) {
-    nextText = `${nextText}\n\n`;
+  if (!reasoningDelta) {
+    return currentText;
   }
 
-  if (reasoningDelta) {
-    nextText = `${nextText}${reasoningDelta}`;
-  }
-
-  return nextText;
+  return `${currentText}${reasoningDelta}`;
 }
 
 function mergeThinkingText(
   currentText: string,
   reasoningSummaries: string[] | undefined,
+  persistedThinkingTexts?: Set<string>,
 ): string {
   const summaryText = joinReasoningSummaries(reasoningSummaries);
 
@@ -177,6 +171,10 @@ function mergeThinkingText(
 
   const normalizedCurrent = currentText.trim();
   const normalizedSummary = summaryText.trim();
+
+  if (persistedThinkingTexts?.has(normalizedSummary)) {
+    return currentText;
+  }
 
   if (!normalizedCurrent) {
     return normalizedSummary;
@@ -196,15 +194,21 @@ function mergeThinkingText(
   return normalizedSummary;
 }
 
+function createPendingThinkingMessage(pendingThinkingText: string) {
+  const normalizedThinkingText = pendingThinkingText.trim();
+  if (!normalizedThinkingText) {
+    return undefined;
+  }
+
+  return createThinkingMessage(
+    formatThinkingMessageContent(normalizedThinkingText),
+  );
+}
+
 function deriveDisplayMessagesFromAgentMessages(
   messages: AgentMessage[],
-  pendingToolCallMessages: Map<string, ReturnType<typeof createMessage>>,
-): {
-  displayMessages: ReturnType<typeof createMessage>[];
-  queuedToolCallCount: number;
-} {
+): ReturnType<typeof createMessage>[] {
   const displayMessages: ReturnType<typeof createMessage>[] = [];
-  let queuedToolCallCount = 0;
 
   for (const message of messages) {
     if (!Array.isArray(message.content)) {
@@ -213,7 +217,6 @@ function deriveDisplayMessagesFromAgentMessages(
 
     if (message.role === "assistant") {
       const hasToolUse = message.content.some((block) => block.type === "tool_use");
-
       if (!hasToolUse) {
         continue;
       }
@@ -227,8 +230,7 @@ function deriveDisplayMessagesFromAgentMessages(
         }
 
         if (block.type === "tool_use") {
-          pendingToolCallMessages.set(block.id, createToolCallMessage(block));
-          queuedToolCallCount += 1;
+          displayMessages.push(createToolCallMessage(block));
         }
       }
       continue;
@@ -237,21 +239,13 @@ function deriveDisplayMessagesFromAgentMessages(
     if (message.role === "user") {
       for (const block of message.content) {
         if (block.type === "tool_result") {
-          const pendingToolCallMessage = pendingToolCallMessages.get(block.toolUseId);
-          if (pendingToolCallMessage) {
-            displayMessages.push(pendingToolCallMessage);
-            pendingToolCallMessages.delete(block.toolUseId);
-          }
           displayMessages.push(createToolResultMessage(block));
         }
       }
     }
   }
 
-  return {
-    displayMessages,
-    queuedToolCallCount,
-  };
+  return displayMessages;
 }
 
 function serializeAgentMessageForDebug(message: AgentMessage) {
@@ -370,10 +364,7 @@ export class QueryEngine {
     let liveThinkingText = "";
     let pendingThinkingText = "";
     let hasPersistedThinkingMessages = false;
-    const pendingToolCallMessages = new Map<
-      string,
-      ReturnType<typeof createMessage>
-    >();
+    const persistedThinkingTexts = new Set<string>();
 
     while (true) {
       const step = await queryIterator.next();
@@ -382,32 +373,44 @@ export class QueryEngine {
         break;
       }
 
-      liveThinkingText = appendLiveThinkingText(
+      if (step.value.reasoningSectionBreak) {
+        const thinkingMessage = createPendingThinkingMessage(pendingThinkingText);
+        if (thinkingMessage) {
+          persistedThinkingTexts.add(pendingThinkingText.trim());
+          pendingThinkingText = "";
+          liveThinkingText = "";
+          hasPersistedThinkingMessages = true;
+          currentSession = updateChatSessionMessages(currentSession, [
+            ...currentSession.messages,
+            thinkingMessage,
+          ]);
+          yield {
+            session: currentSession,
+            persist: true,
+            liveThinkingText: undefined,
+          };
+        }
+      }
+
+      liveThinkingText = appendThinkingDelta(
         liveThinkingText,
         step.value.reasoningDelta,
-        step.value.reasoningSectionBreak,
       );
-      pendingThinkingText = appendLiveThinkingText(
+      pendingThinkingText = appendThinkingDelta(
         pendingThinkingText,
         step.value.reasoningDelta,
-        step.value.reasoningSectionBreak,
-      );
-
-      const newAgentMessages = step.value.addedMessages;
-      currentAgentMessages = [...currentAgentMessages, ...newAgentMessages];
-      const {
-        displayMessages: toolDisplayMessages,
-        queuedToolCallCount,
-      } = deriveDisplayMessagesFromAgentMessages(
-        newAgentMessages,
-        pendingToolCallMessages,
-      );
-      const debugMessages = (step.value.debugEntries ?? []).map((entry) =>
-        createDebugMessage(entry)
       );
       pendingThinkingText = mergeThinkingText(
         pendingThinkingText,
         step.value.reasoningSummaries,
+        persistedThinkingTexts,
+      );
+
+      const newAgentMessages = step.value.addedMessages;
+      currentAgentMessages = [...currentAgentMessages, ...newAgentMessages];
+      const displayMessages = deriveDisplayMessagesFromAgentMessages(newAgentMessages);
+      const debugMessages = (step.value.debugEntries ?? []).map((entry) =>
+        createDebugMessage(entry)
       );
 
       if (newAgentMessages.length > 0) {
@@ -417,32 +420,63 @@ export class QueryEngine {
         );
       }
 
-      const thinkingMessages = (toolDisplayMessages.length > 0 ||
-            queuedToolCallCount > 0) &&
-            pendingThinkingText.trim()
-          ? [
-            createThinkingMessage(
-              formatThinkingMessageContent(pendingThinkingText.trim()),
-            ),
-          ]
-          : [];
-
-        if (thinkingMessages.length > 0) {
+      if (step.value.outputTextDelta) {
+        const thinkingMessage = createPendingThinkingMessage(pendingThinkingText);
+        if (thinkingMessage) {
+          persistedThinkingTexts.add(pendingThinkingText.trim());
           pendingThinkingText = "";
           liveThinkingText = "";
           hasPersistedThinkingMessages = true;
+          currentSession = updateChatSessionMessages(currentSession, [
+            ...currentSession.messages,
+            thinkingMessage,
+          ]);
+          yield {
+            session: currentSession,
+            persist: true,
+            liveThinkingText: undefined,
+          };
         }
+      }
 
       if (
-        toolDisplayMessages.length > 0 ||
-        debugMessages.length > 0 ||
-        thinkingMessages.length > 0
+        pendingThinkingText.trim() &&
+        (displayMessages.length > 0 || debugMessages.length > 0)
       ) {
+        const thinkingMessage = createPendingThinkingMessage(pendingThinkingText);
+        if (thinkingMessage) {
+          persistedThinkingTexts.add(pendingThinkingText.trim());
+          pendingThinkingText = "";
+          liveThinkingText = "";
+          hasPersistedThinkingMessages = true;
+          currentSession = updateChatSessionMessages(currentSession, [
+            ...currentSession.messages,
+            thinkingMessage,
+          ]);
+          yield {
+            session: currentSession,
+            persist: true,
+            liveThinkingText: undefined,
+          };
+        }
+      }
+
+      if (debugMessages.length > 0) {
         currentSession = updateChatSessionMessages(currentSession, [
           ...currentSession.messages,
           ...debugMessages,
-          ...toolDisplayMessages,
-          ...thinkingMessages,
+        ]);
+        yield {
+          session: currentSession,
+          persist: true,
+          liveThinkingText: liveThinkingText || undefined,
+        };
+      }
+
+      if (displayMessages.length > 0) {
+        currentSession = updateChatSessionMessages(currentSession, [
+          ...currentSession.messages,
+          ...displayMessages,
         ]);
         yield {
           session: currentSession,
@@ -452,7 +486,7 @@ export class QueryEngine {
         continue;
       }
 
-      if (step.value.reasoningDelta || step.value.reasoningSectionBreak) {
+      if ((step.value.reasoningDelta || step.value.reasoningSectionBreak) && liveThinkingText) {
         yield {
           session: currentSession,
           persist: false,
@@ -494,30 +528,45 @@ export class QueryEngine {
         !hasPersistedThinkingMessages
       ? joinReasoningSummaries(queryResult.reasoningSummaries)
       : undefined;
-    const finalThinkingMessages = pendingThinkingText.trim()
-      ? [createThinkingMessage(formatThinkingMessageContent(pendingThinkingText.trim()))]
+    const finalThinkingMessage = pendingThinkingText.trim()
+      ? createThinkingMessage(formatThinkingMessageContent(pendingThinkingText.trim()))
       : fallbackThinkingSummary
-      ? [createThinkingMessage(formatThinkingMessageContent(fallbackThinkingSummary))]
-      : [];
+      ? createThinkingMessage(formatThinkingMessageContent(fallbackThinkingSummary))
+      : undefined;
+    pendingThinkingText = "";
+    liveThinkingText = "";
 
-    const finalSession = updateChatSessionMessages(
-      updateChatSessionLastResponsesResponseId(
-        updateChatSessionAgentMessages(currentSession, queryResult.messages),
-        queryResult.lastResponseId ?? currentSession.lastResponsesResponseId,
-      ),
-      [
-        ...currentSession.messages,
-        ...finalThinkingMessages,
-        ...(assistantText
-          ? [createAssistantReply(assistantText)]
-          : []),
-      ],
+    currentSession = updateChatSessionLastResponsesResponseId(
+      updateChatSessionAgentMessages(currentSession, queryResult.messages),
+      queryResult.lastResponseId ?? currentSession.lastResponsesResponseId,
     );
-    yield {
-      session: finalSession,
-      persist: true,
-      liveThinkingText: undefined,
-    };
-    return finalSession;
+
+    if (finalThinkingMessage) {
+      persistedThinkingTexts.add(finalThinkingMessage.content.trim());
+      hasPersistedThinkingMessages = true;
+      currentSession = updateChatSessionMessages(currentSession, [
+        ...currentSession.messages,
+        finalThinkingMessage,
+      ]);
+      yield {
+        session: currentSession,
+        persist: true,
+        liveThinkingText: undefined,
+      };
+    }
+
+    if (assistantText) {
+      currentSession = updateChatSessionMessages(currentSession, [
+        ...currentSession.messages,
+        createAssistantReply(assistantText),
+      ]);
+      yield {
+        session: currentSession,
+        persist: true,
+        liveThinkingText: undefined,
+      };
+    }
+
+    return currentSession;
   }
 }

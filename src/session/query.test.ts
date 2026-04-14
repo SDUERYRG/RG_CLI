@@ -159,7 +159,7 @@ test("query emits reasoning updates before the final assistant message", async (
       reasoningDelta: undefined,
       reasoningSectionBreak: undefined,
       addedMessages: 1,
-      reasoningSummaries: ["Alpha", "Beta"],
+      reasoningSummaries: undefined,
     },
   ]);
   expect(result.assistantText).toBe("Final answer");

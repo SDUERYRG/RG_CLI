@@ -50,6 +50,7 @@ export type QueryUpdate = {
   reasoningDelta?: string;
   reasoningSectionBreak?: boolean;
   reasoningSummaries?: string[];
+  outputTextDelta?: string;
 };
 
 function summarizeRawOutputItemTypes(items: unknown[] | undefined): string[] {
@@ -311,6 +312,13 @@ function mapAssistantTurnStreamEventToQueryUpdate(
     };
   }
 
+  if (event.type === "output_text_delta") {
+    return {
+      addedMessages: [],
+      outputTextDelta: event.delta,
+    };
+  }
+
   return null;
 }
 
@@ -336,6 +344,32 @@ function appendUniqueReasoningSummaries(
   }
 
   return appendedSummaries;
+}
+
+function collectReasoningSummariesFromUpdates(updates: QueryUpdate[]): string[] {
+  const reasoningSummaries: string[] = [];
+  let currentSummary = "";
+
+  for (const update of updates) {
+    if (update.reasoningSectionBreak) {
+      const normalizedSummary = currentSummary.trim();
+      if (normalizedSummary) {
+        reasoningSummaries.push(normalizedSummary);
+      }
+      currentSummary = "";
+    }
+
+    if (update.reasoningDelta) {
+      currentSummary = `${currentSummary}${update.reasoningDelta}`;
+    }
+  }
+
+  const normalizedSummary = currentSummary.trim();
+  if (normalizedSummary) {
+    reasoningSummaries.push(normalizedSummary);
+  }
+
+  return reasoningSummaries;
 }
 
 function isAssistantTurnResultEmpty(result: GenerateAssistantTurnResult): boolean {
@@ -492,6 +526,12 @@ export async function* query(
       throw error;
     }
 
+    appendUniqueReasoningSummaries(
+      reasoningSummaries,
+      seenReasoningSummaries,
+      collectReasoningSummariesFromUpdates(pendingStreamUpdates),
+    );
+
     while (pendingStreamUpdates.length > 0) {
       const streamUpdate = pendingStreamUpdates.shift();
       if (streamUpdate) {
@@ -579,17 +619,17 @@ export async function* query(
       };
     }
 
-    const toolResults = await runToolCalls(toolUses, {
+    for await (const toolResult of runToolCalls(toolUses, {
       cwd: params.cwd,
-    });
-
-    workingMessages = [
-      ...workingMessages,
-      ...toolResults,
-    ];
-    yield {
-      addedMessages: toolResults,
-    };
+    })) {
+      workingMessages = [
+        ...workingMessages,
+        toolResult,
+      ];
+      yield {
+        addedMessages: [toolResult],
+      };
+    }
   }
 
 }

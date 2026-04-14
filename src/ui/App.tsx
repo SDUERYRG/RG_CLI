@@ -5,7 +5,7 @@
  * 说明：页面状态集中在这里管理，具体展示拆给子组件处理。
  */
 import type { AppConfig } from "../config/defaults.ts";
-import React, { startTransition, useDeferredValue, useEffect, useRef, useState } from "react";
+import React, { startTransition, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp } from "ink";
 import {
   createAssistantReply,
@@ -57,7 +57,6 @@ export function App({ config }: AppProps) {
   const messages = activeSession.messages;
   const sessionTitle = getChatSessionDisplayTitle(activeSession);
   const sessionSummary = getChatSessionDisplaySummary(activeSession);
-  const deferredMessages = useDeferredValue(messages);
 
   function flushLiveThinkingText() {
     if (liveThinkingFlushTimerRef.current) {
@@ -255,9 +254,7 @@ export function App({ config }: AppProps) {
         latestSession = step.session;
 
         if (sessionChanged) {
-          startTransition(() => {
-            setActiveSession(step.session);
-          });
+          setActiveSession(step.session);
         }
 
         scheduleLiveThinkingText(step.liveThinkingText, {
@@ -315,7 +312,8 @@ export function App({ config }: AppProps) {
         <Text dimColor>{`摘要：${sessionSummary}`}</Text>
       </Box>
       <MessageList
-        messages={deferredMessages}
+        key={activeSession.id}
+        messages={messages}
         transcriptKey={activeSession.id}
       />
       <ThinkingPanel text={liveThinkingText} isLoading={isLoading} />

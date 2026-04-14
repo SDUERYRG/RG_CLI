@@ -4,7 +4,7 @@
  * 作用：负责渲染消息列表和单条消息展示。
  * 说明：把列表展示与页面状态分离，有利于以后做滚动区和消息样式扩展。
  */
-import React from "react";
+import React, { useLayoutEffect, useRef, useState } from "react";
 import { Box, Static, Text } from "ink";
 import type { ChatMessage } from "../../session/index.ts";
 import { Header } from "./Header.tsx";
@@ -15,9 +15,43 @@ type MessageListProps = {
   transcriptKey?: string;
 };
 
-type TranscriptItem =
-  | { type: "header"; sessionKey: string }
-  | { type: "message"; message: ChatMessage };
+type MessageListReconciliation =
+  | { mode: "noop"; messages: ChatMessage[] }
+  | { mode: "append"; messages: ChatMessage[] }
+  | { mode: "reset"; messages: ChatMessage[] };
+
+export function reconcileStaticMessages(
+  previousMessages: ChatMessage[],
+  nextMessages: ChatMessage[],
+): MessageListReconciliation {
+  if (previousMessages.length > nextMessages.length) {
+    return {
+      mode: "reset",
+      messages: nextMessages,
+    };
+  }
+
+  for (const [index, previousMessage] of previousMessages.entries()) {
+    if (nextMessages[index]?.id !== previousMessage.id) {
+      return {
+        mode: "reset",
+        messages: nextMessages,
+      };
+    }
+  }
+
+  if (previousMessages.length === nextMessages.length) {
+    return {
+      mode: "noop",
+      messages: [],
+    };
+  }
+
+  return {
+    mode: "append",
+    messages: nextMessages.slice(previousMessages.length),
+  };
+}
 
 export const MessageItem = React.memo(function MessageItem({ message }: {
   message: ChatMessage;
@@ -62,20 +96,36 @@ export const MessageList = React.memo(function MessageList({
   transcriptKey,
 }: MessageListProps) {
   const sessionKey = transcriptKey ?? "default";
-  const transcriptItems: TranscriptItem[] = [
-    { type: "header", sessionKey },
-    ...messages.map((message) => ({
-      type: "message" as const,
-      message,
-    })),
-  ];
+  const [staticMessages, setStaticMessages] = useState<ChatMessage[]>(() => messages);
+  const staticMessagesRef = useRef(staticMessages);
+
+  useLayoutEffect(() => {
+    const reconciliation = reconcileStaticMessages(staticMessagesRef.current, messages);
+
+    if (reconciliation.mode === "noop") {
+      return;
+    }
+
+    if (reconciliation.mode === "reset") {
+      staticMessagesRef.current = reconciliation.messages;
+      setStaticMessages(reconciliation.messages);
+      return;
+    }
+
+    const nextStaticMessages = [
+      ...staticMessagesRef.current,
+      ...reconciliation.messages,
+    ];
+    staticMessagesRef.current = nextStaticMessages;
+    setStaticMessages(nextStaticMessages);
+  }, [messages]);
 
   return (
-    <Static key={sessionKey} items={transcriptItems}>
-      {(item) =>
-        item.type === "header"
-          ? <Header key={`header-${item.sessionKey}`} />
-          : <MessageItem key={item.message.id} message={item.message} />}
-    </Static>
+    <Box key={sessionKey} flexDirection="column">
+      <Header />
+      <Static items={staticMessages}>
+        {(message) => <MessageItem key={message.id} message={message} />}
+      </Static>
+    </Box>
   );
 });

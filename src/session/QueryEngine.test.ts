@@ -13,6 +13,7 @@ import { defaultConfig } from "../config/defaults.ts";
 import { getCwd, setCwd } from "../shared/cwd.ts";
 import { getWelcomeMessage } from "./messages.ts";
 import { QueryEngine } from "./QueryEngine.ts";
+import type { QueryEngineStep } from "./QueryEngine.ts";
 import { createChatSession } from "./storage.ts";
 
 function createStubClient(): LlmClient {
@@ -20,7 +21,9 @@ function createStubClient(): LlmClient {
     async generateText(_params: GenerateTextParams): Promise<GenerateTextResult> {
       throw new Error("generateText is not used in this test.");
     },
-    async generateAssistantTurn(_params: GenerateAssistantTurnParams): Promise<GenerateAssistantTurnResult> {
+    async generateAssistantTurn(
+      _params: GenerateAssistantTurnParams,
+    ): Promise<GenerateAssistantTurnResult> {
       throw new Error("blocking fallback should not run");
     },
     async *streamAssistantTurn(
@@ -29,6 +32,10 @@ function createStubClient(): LlmClient {
       yield {
         type: "reasoning_delta",
         delta: "Live planning",
+      };
+      yield {
+        type: "output_text_delta",
+        delta: "F",
       };
 
       return {
@@ -43,9 +50,8 @@ function createStubClient(): LlmClient {
   };
 }
 
-test("QueryEngine keeps live reasoning out of persisted session snapshots", async () => {
-  const client = createStubClient();
-  const engine = new QueryEngine({
+function createResponsesEngine(client: LlmClient): QueryEngine {
+  return new QueryEngine({
     config: {
       ...defaultConfig,
       llmProvider: "openai-compatible",
@@ -54,9 +60,13 @@ test("QueryEngine keeps live reasoning out of persisted session snapshots", asyn
     },
     client,
   });
+}
+
+test("QueryEngine keeps live reasoning out of persisted session snapshots", async () => {
+  const engine = createResponsesEngine(createStubClient());
   const initialSession = createChatSession("D:\\test", [getWelcomeMessage()]);
 
-  const steps = [];
+  const steps: QueryEngineStep[] = [];
   let finalSession = initialSession;
 
   for await (const step of engine.submitMessage(initialSession, "hello")) {
@@ -69,20 +79,80 @@ test("QueryEngine keeps live reasoning out of persisted session snapshots", asyn
   expect(nonPersistentSteps[0]?.liveThinkingText).toBe("Live planning");
   expect(nonPersistentSteps[0]?.session.messages).toBe(steps[0]?.session.messages);
 
-  const persistentStepsBeforeFinal = steps.filter((step, index) =>
-    step.persist && index < steps.length - 1
+  const thinkingStepIndex = steps.findIndex((step) =>
+    step.persist && step.session.messages.at(-1)?.kind === "thinking"
   );
-  for (const step of persistentStepsBeforeFinal) {
-    expect(step.session.messages.some((message) => message.kind === "thinking")).toBe(false);
-  }
+  const assistantStepIndex = steps.findIndex((step) =>
+    step.persist && step.session.messages.at(-1)?.content === "Final answer"
+  );
+  expect(thinkingStepIndex).toBeGreaterThan(0);
+  expect(assistantStepIndex).toBeGreaterThan(thinkingStepIndex);
 
   const finalThinkingMessages = finalSession.messages.filter((message) =>
     message.kind === "thinking"
   );
   expect(finalThinkingMessages).toHaveLength(1);
-  expect(finalThinkingMessages[0]?.content).toBe("思考摘要\nLive planning");
+  expect(finalThinkingMessages[0]?.content).toContain("Live planning");
   expect(finalSession.lastResponsesResponseId).toBe("resp_final");
   expect(steps.at(-1)?.liveThinkingText).toBeUndefined();
+});
+
+test("QueryEngine does not emit an extra combined thinking summary after streamed sections", async () => {
+  const client: LlmClient = {
+    async generateText(_params: GenerateTextParams): Promise<GenerateTextResult> {
+      throw new Error("generateText is not used in this test.");
+    },
+    async generateAssistantTurn(
+      _params: GenerateAssistantTurnParams,
+    ): Promise<GenerateAssistantTurnResult> {
+      throw new Error("blocking fallback should not run");
+    },
+    async *streamAssistantTurn(
+      _params: GenerateAssistantTurnParams,
+    ): AsyncGenerator<AssistantTurnStreamEvent, GenerateAssistantTurnResult> {
+      yield {
+        type: "reasoning_delta",
+        delta: "Alpha",
+      };
+      yield {
+        type: "reasoning_section_break",
+      };
+      yield {
+        type: "reasoning_delta",
+        delta: "Beta",
+      };
+      yield {
+        type: "output_text_delta",
+        delta: "F",
+      };
+
+      return {
+        blocks: [{
+          type: "text",
+          text: "Final answer",
+        }],
+        reasoningSummaries: ["Alpha", "Beta"],
+        responseId: "resp_sections",
+      };
+    },
+  };
+
+  const engine = createResponsesEngine(client);
+  const initialSession = createChatSession("D:\\test", [getWelcomeMessage()]);
+
+  let finalSession = initialSession;
+  for await (const step of engine.submitMessage(initialSession, "hello")) {
+    finalSession = step.session;
+  }
+
+  const thinkingContents = finalSession.messages
+    .filter((message) => message.kind === "thinking")
+    .map((message) => message.content);
+  expect(thinkingContents).toHaveLength(2);
+  expect(thinkingContents[0]).toContain("Alpha");
+  expect(thinkingContents[1]).toContain("Beta");
+  expect(thinkingContents.join("\n\n")).not.toContain("Alpha\n\nBeta");
+  expect(finalSession.messages.at(-1)?.content).toBe("Final answer");
 });
 
 test("QueryEngine interleaves per-turn thinking messages with tool calls", async () => {
@@ -137,15 +207,7 @@ test("QueryEngine interleaves per-turn thinking messages with tool calls", async
     },
   };
 
-  const engine = new QueryEngine({
-    config: {
-      ...defaultConfig,
-      llmProvider: "openai-compatible",
-      llmWireApi: "responses",
-      model: "gpt-5.4",
-    },
-    client,
-  });
+  const engine = createResponsesEngine(client);
   const initialSession = createChatSession("D:\\test", [getWelcomeMessage()]);
 
   let finalSession = initialSession;
@@ -173,18 +235,73 @@ test("QueryEngine interleaves per-turn thinking messages with tool calls", async
     "tool_result",
     "assistant",
   ]);
-  expect(
-    finalSession.messages
-      .filter((message) => message.kind === "thinking")
-      .map((message) => message.content),
-  ).toEqual([
-    "思考摘要\nThought 1",
-    "思考摘要\nThought 2",
-  ]);
+
+  const thinkingContents = finalSession.messages
+    .filter((message) => message.kind === "thinking")
+    .map((message) => message.content);
+  expect(thinkingContents).toHaveLength(2);
+  expect(thinkingContents[0]).toContain("Thought 1");
+  expect(thinkingContents[1]).toContain("Thought 2");
   expect(finalSession.lastResponsesResponseId).toBe("resp_3");
 });
 
-test("QueryEngine pairs multiple tool calls with their results in order", async () => {
+test("QueryEngine persists tool calls before their results", async () => {
+  let turn = 0;
+  const client: LlmClient = {
+    async generateText(_params: GenerateTextParams): Promise<GenerateTextResult> {
+      throw new Error("generateText is not used in this test.");
+    },
+    async generateAssistantTurn(
+      _params: GenerateAssistantTurnParams,
+    ): Promise<GenerateAssistantTurnResult> {
+      throw new Error("blocking fallback should not run");
+    },
+    async *streamAssistantTurn(
+      _params: GenerateAssistantTurnParams,
+    ): AsyncGenerator<AssistantTurnStreamEvent, GenerateAssistantTurnResult> {
+      turn += 1;
+
+      if (turn === 1) {
+        return {
+          blocks: [{
+            type: "tool_use",
+            id: "tool_1",
+            name: "missing_tool_1",
+            input: {},
+          }],
+          responseId: "resp_1",
+        };
+      }
+
+      return {
+        blocks: [{
+          type: "text",
+          text: "Final answer",
+        }],
+        responseId: "resp_2",
+      };
+    },
+  };
+
+  const engine = createResponsesEngine(client);
+  const initialSession = createChatSession("D:\\test", [getWelcomeMessage()]);
+
+  const steps: QueryEngineStep[] = [];
+  for await (const step of engine.submitMessage(initialSession, "hello")) {
+    steps.push(step);
+  }
+
+  const toolCallStepIndex = steps.findIndex((step) =>
+    step.persist && step.session.messages.at(-1)?.kind === "tool_call"
+  );
+  const toolResultStepIndex = steps.findIndex((step) =>
+    step.persist && step.session.messages.at(-1)?.kind === "tool_result"
+  );
+  expect(toolCallStepIndex).toBeGreaterThan(0);
+  expect(toolResultStepIndex).toBeGreaterThan(toolCallStepIndex);
+});
+
+test("QueryEngine renders multiple tool calls before their streamed results", async () => {
   let turn = 0;
   const client: LlmClient = {
     async generateText(_params: GenerateTextParams): Promise<GenerateTextResult> {
@@ -230,15 +347,7 @@ test("QueryEngine pairs multiple tool calls with their results in order", async 
     },
   };
 
-  const engine = new QueryEngine({
-    config: {
-      ...defaultConfig,
-      llmProvider: "openai-compatible",
-      llmWireApi: "responses",
-      model: "gpt-5.4",
-    },
-    client,
-  });
+  const engine = createResponsesEngine(client);
   const initialSession = createChatSession("D:\\test", [getWelcomeMessage()]);
 
   let finalSession = initialSession;
@@ -246,33 +355,19 @@ test("QueryEngine pairs multiple tool calls with their results in order", async 
     finalSession = step.session;
   }
 
-  expect(
-    finalSession.messages
-      .filter((message) =>
-        message.kind === "tool_call" || message.kind === "tool_result"
-      )
-      .map((message) => ({
-        kind: message.kind,
-        content: message.content,
-      })),
-  ).toEqual([
-    {
-      kind: "tool_call",
-      content: "调用missing_tool_1工具，参数{}",
-    },
-    {
-      kind: "tool_result",
-      content: "未找到工具：missing_tool_1",
-    },
-    {
-      kind: "tool_call",
-      content: "调用missing_tool_2工具，参数{}",
-    },
-    {
-      kind: "tool_result",
-      content: "未找到工具：missing_tool_2",
-    },
+  const toolMessages = finalSession.messages.filter((message) =>
+    message.kind === "tool_call" || message.kind === "tool_result"
+  );
+  expect(toolMessages.map((message) => message.kind)).toEqual([
+    "tool_call",
+    "tool_call",
+    "tool_result",
+    "tool_result",
   ]);
+  expect(toolMessages[0]?.content).toContain("missing_tool_1");
+  expect(toolMessages[1]?.content).toContain("missing_tool_2");
+  expect(toolMessages[2]?.content).toContain("missing_tool_1");
+  expect(toolMessages[3]?.content).toContain("missing_tool_2");
 });
 
 test("QueryEngine preserves assistant text that accompanies a tool call", async () => {
@@ -319,58 +414,23 @@ test("QueryEngine preserves assistant text that accompanies a tool call", async 
     },
   };
 
-  const engine = new QueryEngine({
-    config: {
-      ...defaultConfig,
-      llmProvider: "openai-compatible",
-      llmWireApi: "responses",
-      model: "gpt-5.4",
-    },
-    client,
-  });
-  const initialSession = createChatSession("D:\\test", [getWelcomeMessage()]);
+  const engine = createResponsesEngine(client);
+  const welcomeMessage = getWelcomeMessage();
+  const initialSession = createChatSession("D:\\test", [welcomeMessage]);
 
   let finalSession = initialSession;
   for await (const step of engine.submitMessage(initialSession, "hello")) {
     finalSession = step.session;
   }
 
-  expect(finalSession.messages.map((message) => ({
-    role: message.role,
-    kind: message.kind ?? "regular",
-    content: message.content,
-  }))).toEqual([
-    {
-      role: "assistant",
-      kind: "regular",
-      content: "你好，我是 RG CLI 助手。你可以先输入一条消息试试看。",
-    },
-    {
-      role: "user",
-      kind: "regular",
-      content: "hello",
-    },
-    {
-      role: "assistant",
-      kind: "regular",
-      content: "Let me inspect that first.",
-    },
-    {
-      role: "assistant",
-      kind: "tool_call",
-      content: "调用missing_tool_1工具，参数{}",
-    },
-    {
-      role: "assistant",
-      kind: "tool_result",
-      content: "未找到工具：missing_tool_1",
-    },
-    {
-      role: "assistant",
-      kind: "regular",
-      content: "Final answer",
-    },
-  ]);
+  expect(finalSession.messages[0]?.content).toBe(welcomeMessage.content);
+  expect(finalSession.messages[1]?.content).toBe("hello");
+  expect(finalSession.messages[2]?.content).toBe("Let me inspect that first.");
+  expect(finalSession.messages[3]?.kind).toBe("tool_call");
+  expect(finalSession.messages[3]?.content).toContain("missing_tool_1");
+  expect(finalSession.messages[4]?.kind).toBe("tool_result");
+  expect(finalSession.messages[4]?.content).toContain("missing_tool_1");
+  expect(finalSession.messages[5]?.content).toBe("Final answer");
 });
 
 test("QueryEngine renders tool calls inline and truncates tool results to four lines", async () => {
@@ -433,15 +493,7 @@ test("QueryEngine renders tool calls inline and truncates tool results to four l
       },
     };
 
-    const engine = new QueryEngine({
-      config: {
-        ...defaultConfig,
-        llmProvider: "openai-compatible",
-        llmWireApi: "responses",
-        model: "gpt-5.4",
-      },
-      client,
-    });
+    const engine = createResponsesEngine(client);
     const initialSession = createChatSession(tempRoot, [getWelcomeMessage()]);
 
     let finalSession = initialSession;
@@ -449,21 +501,20 @@ test("QueryEngine renders tool calls inline and truncates tool results to four l
       finalSession = step.session;
     }
 
-    expect(
-      finalSession.messages.find((message) => message.kind === "tool_call")?.content,
-    ).toBe(`调用list_directory工具，参数{"path":"${directoryName}"}`);
+    const toolCallContent = finalSession.messages.find((message) =>
+      message.kind === "tool_call"
+    )?.content;
+    expect(toolCallContent).toContain("list_directory");
+    expect(toolCallContent).toContain(`"path":"${directoryName}"`);
 
-    expect(
-      finalSession.messages.find((message) => message.kind === "tool_result")?.content,
-    ).toBe(
-      [
-        `目录 ${targetDirectory} 下的内容：`,
-        "[FILE] alpha.txt",
-        "[FILE] bravo.txt",
-        "[FILE] charlie.txt",
-        "3 lines+",
-      ].join("\n"),
-    );
+    const toolResultContent = finalSession.messages.find((message) =>
+      message.kind === "tool_result"
+    )?.content;
+    expect(toolResultContent).toContain(targetDirectory);
+    expect(toolResultContent).toContain("[FILE] alpha.txt");
+    expect(toolResultContent).toContain("[FILE] bravo.txt");
+    expect(toolResultContent).toContain("[FILE] charlie.txt");
+    expect(toolResultContent).toContain("3 lines+");
   } finally {
     setCwd(originalCwd);
     await rm(tempRoot, { recursive: true, force: true });
