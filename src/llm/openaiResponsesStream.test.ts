@@ -129,3 +129,50 @@ test("streamOpenAIResponsesAssistantTurn falls back to synthetic output when com
     }],
   }]);
 });
+
+test("streamOpenAIResponsesAssistantTurn extracts commentary messages from output text deltas", async () => {
+  const response = createSseResponse([
+    "event: response.output_text.delta\n",
+    "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"item_id\":\"msg_1\",\"content_index\":0,\"delta\":\"<commentary>Inspecting files\"}\n\n",
+    "event: response.output_text.delta\n",
+    "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"item_id\":\"msg_1\",\"content_index\":0,\"delta\":\"</commentary>Final answer\"}\n\n",
+    "event: response.completed\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_commentary\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"<commentary>Inspecting files</commentary>Final answer\"}]}]}}\n\n",
+  ]);
+
+  const iterator = streamOpenAIResponsesAssistantTurn({
+    baseUrl: "https://api.openai.com/v1",
+    urlCandidates: ["https://api.openai.com/v1/responses"],
+    headers: {},
+    body: {
+      model: "gpt-5.4",
+      input: [],
+    },
+    timeoutMs: 5_000,
+    extractResultFromPayload: extractAssistantBlocksFromResponsesPayload,
+    fetchImpl: async () => response,
+  });
+
+  const events: Array<{ type: string; delta?: string; text?: string }> = [];
+  let finalResult;
+
+  while (true) {
+    const step = await iterator.next();
+    if (step.done) {
+      finalResult = step.value;
+      break;
+    }
+
+    events.push(step.value);
+  }
+
+  expect(events).toEqual([
+    { type: "commentary_message", text: "Inspecting files" },
+    { type: "output_text_delta", delta: "Final answer" },
+  ]);
+  expect(finalResult.commentaryTexts).toEqual(["Inspecting files"]);
+  expect(finalResult.blocks).toEqual([{
+    type: "text",
+    text: "Final answer",
+  }]);
+});

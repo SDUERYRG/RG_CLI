@@ -15,6 +15,7 @@ import type {
   LlmClient,
   LlmMessage,
 } from "./types.ts";
+import { extractCommentaryFromText } from "./commentary.ts";
 import { streamOpenAIResponsesAssistantTurn } from "./openaiResponsesStream.ts";
 
 function buildUrl(baseUrl: string, path: string): string {
@@ -456,6 +457,7 @@ export function extractAssistantBlocksFromResponsesPayload(
   };
 
   const blocks: GenerateAssistantTurnResult["blocks"] = [];
+  const commentaryTexts: string[] = [];
 
   for (const item of response.output ?? []) {
     if (item.type === "message" && Array.isArray(item.content)) {
@@ -466,13 +468,16 @@ export function extractAssistantBlocksFromResponsesPayload(
           "type" in part &&
           part.type === "output_text" &&
           "text" in part &&
-          typeof part.text === "string" &&
-          part.text.trim()
+          typeof part.text === "string"
         ) {
-          blocks.push({
-            type: "text",
-            text: part.text.trim(),
-          });
+          const extracted = extractCommentaryFromText(part.text);
+          commentaryTexts.push(...extracted.commentaryTexts);
+          if (extracted.outputText.trim()) {
+            blocks.push({
+              type: "text",
+              text: extracted.outputText.trim(),
+            });
+          }
         }
       }
       continue;
@@ -513,6 +518,7 @@ export function extractAssistantBlocksFromResponsesPayload(
 
   return {
     blocks,
+    commentaryTexts: commentaryTexts.length > 0 ? commentaryTexts : undefined,
     reasoningSummaries: extractReasoningSummariesFromResponsesPayload(payload),
     responseId: typeof response.id === "string" ? response.id : undefined,
     rawOutputItems: response.output,
@@ -632,9 +638,9 @@ function toOpenAIChatMessages(messages: AgentConversationMessage[]): Array<Recor
 
 function extractAssistantBlocksFromChatCompletionsPayload(
   payload: unknown,
-): GenerateAssistantTurnResult["blocks"] {
+): GenerateAssistantTurnResult {
   if (!payload || typeof payload !== "object") {
-    return [];
+    return { blocks: [] };
   }
 
   const response = payload as {
@@ -654,26 +660,33 @@ function extractAssistantBlocksFromChatCompletionsPayload(
 
   const message = response.choices?.[0]?.message;
   if (!message) {
-    return [];
+    return { blocks: [] };
   }
 
   const blocks: GenerateAssistantTurnResult["blocks"] = [];
+  const commentaryTexts: string[] = [];
 
-  if (typeof message.content === "string" && message.content.trim()) {
-    blocks.push({
-      type: "text",
-      text: message.content.trim(),
-    });
+  if (typeof message.content === "string") {
+    const extracted = extractCommentaryFromText(message.content);
+    commentaryTexts.push(...extracted.commentaryTexts);
+    if (extracted.outputText.trim()) {
+      blocks.push({
+        type: "text",
+        text: extracted.outputText.trim(),
+      });
+    }
   } else if (Array.isArray(message.content)) {
     const merged = message.content
       .map((item) => typeof item?.text === "string" ? item.text.trim() : "")
       .filter(Boolean)
       .join("\n")
       .trim();
-    if (merged) {
+    const extracted = extractCommentaryFromText(merged);
+    commentaryTexts.push(...extracted.commentaryTexts);
+    if (extracted.outputText.trim()) {
       blocks.push({
         type: "text",
-        text: merged,
+        text: extracted.outputText.trim(),
       });
     }
   }
@@ -706,7 +719,10 @@ function extractAssistantBlocksFromChatCompletionsPayload(
     });
   }
 
-  return blocks;
+  return {
+    blocks,
+    commentaryTexts: commentaryTexts.length > 0 ? commentaryTexts : undefined,
+  };
 }
 
 function normalizeConversationMessages(messages: LlmMessage[]): LlmMessage[] {
@@ -942,7 +958,7 @@ export function createOpenAICompatibleClient(config: AppConfig): LlmClient {
       }
 
       return {
-        blocks: extractAssistantBlocksFromChatCompletionsPayload(payload),
+        ...extractAssistantBlocksFromChatCompletionsPayload(payload),
         raw: payload,
       };
     },

@@ -16,6 +16,7 @@ import type {
   LlmClient,
   LlmMessage,
 } from "./types.ts";
+import { extractCommentaryFromText } from "./commentary.ts";
 
 function buildUrl(baseUrl: string, path: string): string {
   const normalizedBaseUrl = baseUrl.endsWith("/")
@@ -187,9 +188,9 @@ function splitAnthropicConversationMessages(messages: AgentConversationMessage[]
 
 function extractAssistantBlocksFromAnthropicPayload(
   payload: unknown,
-): GenerateAssistantTurnResult["blocks"] {
+): GenerateAssistantTurnResult {
   if (!payload || typeof payload !== "object") {
-    return [];
+    return { blocks: [] };
   }
 
   const response = payload as {
@@ -197,16 +198,21 @@ function extractAssistantBlocksFromAnthropicPayload(
   };
 
   if (!Array.isArray(response.content)) {
-    return [];
+    return { blocks: [] };
   }
 
   const blocks: GenerateAssistantTurnResult["blocks"] = [];
+  const commentaryTexts: string[] = [];
   for (const block of response.content) {
     if (block.type === "text" && typeof block.text === "string") {
-      blocks.push({
-        type: "text",
-        text: block.text,
-      });
+      const extracted = extractCommentaryFromText(block.text);
+      commentaryTexts.push(...extracted.commentaryTexts);
+      if (extracted.outputText.trim()) {
+        blocks.push({
+          type: "text",
+          text: extracted.outputText,
+        });
+      }
       continue;
     }
 
@@ -226,7 +232,10 @@ function extractAssistantBlocksFromAnthropicPayload(
     }
   }
 
-  return blocks;
+  return {
+    blocks,
+    commentaryTexts: commentaryTexts.length > 0 ? commentaryTexts : undefined,
+  };
 }
 
 function splitAnthropicMessages(messages: LlmMessage[]): {
@@ -368,7 +377,7 @@ export function createAnthropicCompatibleClient(config: AppConfig): LlmClient {
       }
 
       return {
-        blocks: extractAssistantBlocksFromAnthropicPayload(payload),
+        ...extractAssistantBlocksFromAnthropicPayload(payload),
         raw: payload,
       };
     },

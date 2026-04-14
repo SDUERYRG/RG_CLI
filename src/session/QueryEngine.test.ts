@@ -155,6 +155,60 @@ test("QueryEngine does not emit an extra combined thinking summary after streame
   expect(finalSession.messages.at(-1)?.content).toBe("Final answer");
 });
 
+test("QueryEngine surfaces commentary as live progress without persisting it", async () => {
+  const client: LlmClient = {
+    async generateText(_params: GenerateTextParams): Promise<GenerateTextResult> {
+      throw new Error("generateText is not used in this test.");
+    },
+    async generateAssistantTurn(
+      _params: GenerateAssistantTurnParams,
+    ): Promise<GenerateAssistantTurnResult> {
+      throw new Error("blocking fallback should not run");
+    },
+    async *streamAssistantTurn(
+      _params: GenerateAssistantTurnParams,
+    ): AsyncGenerator<AssistantTurnStreamEvent, GenerateAssistantTurnResult> {
+      yield {
+        type: "commentary_message",
+        text: "我先检查关键文件",
+      };
+      yield {
+        type: "output_text_delta",
+        delta: "F",
+      };
+
+      return {
+        blocks: [{
+          type: "text",
+          text: "Final answer",
+        }],
+        commentaryTexts: ["我先检查关键文件"],
+        responseId: "resp_commentary",
+      };
+    },
+  };
+
+  const engine = createResponsesEngine(client);
+  const initialSession = createChatSession("D:\\test", [getWelcomeMessage()]);
+
+  const steps: QueryEngineStep[] = [];
+  let finalSession = initialSession;
+
+  for await (const step of engine.submitMessage(initialSession, "hello")) {
+    steps.push(step);
+    finalSession = step.session;
+  }
+
+  const commentaryStep = steps.find((step) =>
+    !step.persist && step.liveCommentaryText === "我先检查关键文件"
+  );
+  expect(commentaryStep).toBeDefined();
+  expect(
+    finalSession.messages.some((message) => message.content.includes("我先检查关键文件")),
+  ).toBe(false);
+  expect(finalSession.messages.at(-1)?.content).toBe("Final answer");
+});
+
 test("QueryEngine interleaves per-turn thinking messages with tool calls", async () => {
   let turn = 0;
   const client: LlmClient = {

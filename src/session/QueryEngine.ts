@@ -30,6 +30,7 @@ type QueryEngineConfig = {
 export type QueryEngineStep = {
   session: PersistedChatSession;
   persist: boolean;
+  liveCommentaryText?: string;
   liveThinkingText?: string;
 };
 
@@ -40,6 +41,14 @@ const RG_CLI_AGENT_SYSTEM_PROMPT = [
   "除非信息仍然不足，否则不要在工具调用后停在空输出状态。",
   "生成思考摘要时，请使用与用户输入相同的语言。",
   "回答时先说结论，再补充你从工具里观察到的关键信息。",
+].join("\n");
+
+const COMMENTARY_PROTOCOL_INSTRUCTION = [
+  "Before each tool call or major investigation step, emit one short progress update for the user inside <commentary>...</commentary>.",
+  "Use the same language as the user.",
+  "Keep each commentary brief, concrete, and action-focused.",
+  "Do not include chain-of-thought or final conclusions inside commentary tags.",
+  "Do not wrap the final answer in commentary tags.",
 ].join("\n");
 
 function deriveAgentMessagesFromSession(session: PersistedChatSession): AgentMessage[] {
@@ -349,7 +358,7 @@ export class QueryEngine {
       model: this.config.model,
       messages: agentMessages,
       cwd: getCwd(),
-      systemPrompt: RG_CLI_AGENT_SYSTEM_PROMPT,
+      systemPrompt: `${RG_CLI_AGENT_SYSTEM_PROMPT}\n\n${COMMENTARY_PROTOCOL_INSTRUCTION}`,
       previousResponseId: session.lastResponsesResponseId,
       useNativeOpenAIResponses: this.config.llmProvider === "openai-compatible" &&
         this.config.llmWireApi === "responses",
@@ -361,6 +370,7 @@ export class QueryEngine {
     let queryResult: Awaited<ReturnType<typeof queryIterator.next>>["value"] | null =
       null;
     let currentAgentMessages = [...agentMessages];
+    let liveCommentaryText = "";
     let liveThinkingText = "";
     let pendingThinkingText = "";
     let hasPersistedThinkingMessages = false;
@@ -371,6 +381,16 @@ export class QueryEngine {
       if (step.done) {
         queryResult = step.value;
         break;
+      }
+
+      if (step.value.commentaryText) {
+        liveCommentaryText = step.value.commentaryText;
+        yield {
+          session: currentSession,
+          persist: false,
+          liveCommentaryText,
+          liveThinkingText: liveThinkingText || undefined,
+        };
       }
 
       if (step.value.reasoningSectionBreak) {
@@ -387,6 +407,7 @@ export class QueryEngine {
           yield {
             session: currentSession,
             persist: true,
+            liveCommentaryText: liveCommentaryText || undefined,
             liveThinkingText: undefined,
           };
         }
@@ -421,6 +442,7 @@ export class QueryEngine {
       }
 
       if (step.value.outputTextDelta) {
+        liveCommentaryText = "";
         const thinkingMessage = createPendingThinkingMessage(pendingThinkingText);
         if (thinkingMessage) {
           persistedThinkingTexts.add(pendingThinkingText.trim());
@@ -434,6 +456,7 @@ export class QueryEngine {
           yield {
             session: currentSession,
             persist: true,
+            liveCommentaryText: undefined,
             liveThinkingText: undefined,
           };
         }
@@ -456,6 +479,7 @@ export class QueryEngine {
           yield {
             session: currentSession,
             persist: true,
+            liveCommentaryText: undefined,
             liveThinkingText: undefined,
           };
         }
@@ -469,6 +493,7 @@ export class QueryEngine {
         yield {
           session: currentSession,
           persist: true,
+          liveCommentaryText: liveCommentaryText || undefined,
           liveThinkingText: liveThinkingText || undefined,
         };
       }
@@ -481,6 +506,7 @@ export class QueryEngine {
         yield {
           session: currentSession,
           persist: true,
+          liveCommentaryText: liveCommentaryText || undefined,
           liveThinkingText: liveThinkingText || undefined,
         };
         continue;
@@ -490,6 +516,7 @@ export class QueryEngine {
         yield {
           session: currentSession,
           persist: false,
+          liveCommentaryText: liveCommentaryText || undefined,
           liveThinkingText: liveThinkingText || undefined,
         };
       }
@@ -518,6 +545,7 @@ export class QueryEngine {
       yield {
         session: currentSession,
         persist: true,
+        liveCommentaryText: liveCommentaryText || undefined,
         liveThinkingText: liveThinkingText || undefined,
       };
     }
@@ -534,6 +562,7 @@ export class QueryEngine {
       ? createThinkingMessage(formatThinkingMessageContent(fallbackThinkingSummary))
       : undefined;
     pendingThinkingText = "";
+    liveCommentaryText = "";
     liveThinkingText = "";
 
     currentSession = updateChatSessionLastResponsesResponseId(
@@ -551,6 +580,7 @@ export class QueryEngine {
       yield {
         session: currentSession,
         persist: true,
+        liveCommentaryText: undefined,
         liveThinkingText: undefined,
       };
     }
@@ -563,6 +593,7 @@ export class QueryEngine {
       yield {
         session: currentSession,
         persist: true,
+        liveCommentaryText: undefined,
         liveThinkingText: undefined,
       };
     }

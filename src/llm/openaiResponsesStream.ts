@@ -2,6 +2,10 @@ import type {
   AssistantTurnStreamEvent,
   GenerateAssistantTurnResult,
 } from "./types.ts";
+import {
+  CommentaryTextStreamParser,
+  extractCommentaryFromText,
+} from "./commentary.ts";
 import { parseSse } from "./parseSse.ts";
 
 type StreamOpenAIResponsesAssistantTurnOptions = {
@@ -27,6 +31,7 @@ type StreamState = {
   outputItemIndexesById: Map<string, number>;
   outputItems: Map<number, Record<string, unknown>>;
   outputText: string;
+  commentaryParsers: Map<string, CommentaryTextStreamParser>;
   responseId?: string;
   completedPayload?: unknown;
 };
@@ -263,6 +268,13 @@ function ensureOutputContentPart(
   };
 }
 
+function getOutputContentPartKey(
+  outputIndex: number,
+  contentIndex: number,
+): string {
+  return `${outputIndex}:${contentIndex}`;
+}
+
 function tryRecordOutputItem(
   state: StreamState,
   payload: Record<string, unknown>,
@@ -354,6 +366,7 @@ function normalizeCompletedPayload(
 
 function hasUsefulAssistantTurnResult(result: GenerateAssistantTurnResult): boolean {
   return result.blocks.length > 0 ||
+    (result.commentaryTexts?.length ?? 0) > 0 ||
     (result.reasoningSummaries?.length ?? 0) > 0 ||
     (result.rawOutputItems?.length ?? 0) > 0;
 }
@@ -364,6 +377,9 @@ function mergeAssistantTurnResults(
 ): GenerateAssistantTurnResult {
   return {
     blocks: primary.blocks.length > 0 ? primary.blocks : fallback.blocks,
+    commentaryTexts: (primary.commentaryTexts?.length ?? 0) > 0
+      ? primary.commentaryTexts
+      : fallback.commentaryTexts,
     reasoningSummaries: (primary.reasoningSummaries?.length ?? 0) > 0
       ? primary.reasoningSummaries
       : fallback.reasoningSummaries,
@@ -457,6 +473,7 @@ export async function* streamOpenAIResponsesAssistantTurn(
     outputItemIndexesById: new Map(),
     outputItems: new Map(),
     outputText: "",
+    commentaryParsers: new Map(),
   };
 
   for await (const sseEvent of parseSse(response.body)) {
@@ -517,14 +534,35 @@ export async function* streamOpenAIResponsesAssistantTurn(
         continue;
       }
 
-      const { part } = ensureOutputContentPart(state, payloadRecord);
-      const previousText = typeof part.text === "string" ? part.text : "";
-      part.text = `${previousText}${delta}`;
-      state.outputText += delta;
-      yield {
-        type: "output_text_delta",
-        delta,
-      };
+      const {
+        outputIndex,
+        contentIndex,
+        part,
+      } = ensureOutputContentPart(state, payloadRecord);
+      const partKey = getOutputContentPartKey(outputIndex, contentIndex);
+      let parser = state.commentaryParsers.get(partKey);
+      if (!parser) {
+        parser = new CommentaryTextStreamParser();
+        state.commentaryParsers.set(partKey, parser);
+      }
+
+      for (const token of parser.push(delta)) {
+        if (token.type === "commentary") {
+          yield {
+            type: "commentary_message",
+            text: token.text,
+          };
+          continue;
+        }
+
+        const previousText = typeof part.text === "string" ? part.text : "";
+        part.text = `${previousText}${token.text}`;
+        state.outputText += token.text;
+        yield {
+          type: "output_text_delta",
+          delta: token.text,
+        };
+      }
       continue;
     }
 
@@ -544,11 +582,19 @@ export async function* streamOpenAIResponsesAssistantTurn(
         continue;
       }
 
-      const { part } = ensureOutputContentPart(state, payloadRecord);
-      part.text = text;
+      const {
+        outputIndex,
+        contentIndex,
+        part,
+      } = ensureOutputContentPart(state, payloadRecord);
+      const extracted = extractCommentaryFromText(text);
+      part.text = extracted.outputText;
       if (!state.outputText.trim()) {
-        state.outputText = text;
+        state.outputText = extracted.outputText;
       }
+      state.commentaryParsers.delete(
+        getOutputContentPartKey(outputIndex, contentIndex),
+      );
       continue;
     }
 
@@ -564,6 +610,40 @@ export async function* streamOpenAIResponsesAssistantTurn(
       }
     }
   }
+
+  for (const [partKey, parser] of state.commentaryParsers.entries()) {
+    const [outputIndexText, contentIndexText] = partKey.split(":");
+    const outputIndex = Number(outputIndexText);
+    const contentIndex = Number(contentIndexText);
+    if (Number.isNaN(outputIndex) || Number.isNaN(contentIndex)) {
+      continue;
+    }
+
+    const item = state.outputItems.get(outputIndex);
+    if (!item) {
+      continue;
+    }
+
+    const content = Array.isArray(item.content) ? [...item.content] : [];
+    const existingPart = content[contentIndex];
+    if (!existingPart || typeof existingPart !== "object") {
+      continue;
+    }
+
+    const part = { ...(existingPart as Record<string, unknown>) };
+    for (const token of parser.flush()) {
+      if (token.type === "output") {
+        const previousText = typeof part.text === "string" ? part.text : "";
+        part.text = `${previousText}${token.text}`;
+        state.outputText += token.text;
+      }
+    }
+
+    content[contentIndex] = part;
+    item.content = content;
+    state.outputItems.set(outputIndex, item);
+  }
+  state.commentaryParsers.clear();
 
   const syntheticPayload = buildSyntheticCompletedPayload(state);
   const primaryPayload = normalizeCompletedPayload(

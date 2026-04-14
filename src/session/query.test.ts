@@ -167,6 +167,50 @@ test("query emits reasoning updates before the final assistant message", async (
   expect(result.lastResponseId).toBe("resp_streamed");
 });
 
+test("query emits commentary updates before the assistant message", async () => {
+  const client = createStubClient({
+    async generateAssistantTurn() {
+      throw new Error("blocking fallback should not run");
+    },
+    async *streamAssistantTurn() {
+      yield {
+        type: "commentary_message",
+        text: "我先检查项目结构",
+      };
+
+      return {
+        blocks: [{
+          type: "text",
+          text: "Final answer",
+        }],
+        commentaryTexts: ["我先检查项目结构"],
+        responseId: "resp_commentary",
+      };
+    },
+  });
+
+  const { updates, result } = await collectQueryRun(client);
+
+  expect(updates).toEqual([
+    {
+      addedMessages: [],
+      commentaryText: "我先检查项目结构",
+    },
+    {
+      addedMessages: [{
+        role: "assistant",
+        content: [{
+          type: "text",
+          text: "Final answer",
+        }],
+      }],
+      reasoningSummaries: undefined,
+    },
+  ]);
+  expect(result.assistantText).toBe("Final answer");
+  expect(result.lastResponseId).toBe("resp_commentary");
+});
+
 test("query uses full replay for native responses follow-up turns instead of previous_response_id continuation", async () => {
   let streamCallCount = 0;
   const seenCalls: GenerateAssistantTurnParams[] = [];

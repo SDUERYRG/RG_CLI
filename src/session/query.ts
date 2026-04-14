@@ -47,6 +47,7 @@ export type QueryResult = {
 export type QueryUpdate = {
   addedMessages: AgentMessage[];
   debugEntries?: string[];
+  commentaryText?: string;
   reasoningDelta?: string;
   reasoningSectionBreak?: boolean;
   reasoningSummaries?: string[];
@@ -319,6 +320,13 @@ function mapAssistantTurnStreamEventToQueryUpdate(
     };
   }
 
+  if (event.type === "commentary_message") {
+    return {
+      addedMessages: [],
+      commentaryText: event.text,
+    };
+  }
+
   return null;
 }
 
@@ -370,6 +378,34 @@ function collectReasoningSummariesFromUpdates(updates: QueryUpdate[]): string[] 
   }
 
   return reasoningSummaries;
+}
+
+function appendUniqueCommentaryTexts(
+  seenCommentaryTexts: Set<string>,
+  nextCommentaryTexts: string[] | undefined,
+): string[] {
+  const appendedCommentaryTexts: string[] = [];
+  if (!nextCommentaryTexts) {
+    return appendedCommentaryTexts;
+  }
+
+  for (const commentaryText of nextCommentaryTexts) {
+    const normalizedCommentaryText = commentaryText.trim();
+    if (!normalizedCommentaryText || seenCommentaryTexts.has(normalizedCommentaryText)) {
+      continue;
+    }
+
+    seenCommentaryTexts.add(normalizedCommentaryText);
+    appendedCommentaryTexts.push(normalizedCommentaryText);
+  }
+
+  return appendedCommentaryTexts;
+}
+
+function collectCommentaryTextsFromUpdates(updates: QueryUpdate[]): string[] {
+  return updates
+    .map((update) => update.commentaryText?.trim())
+    .filter((commentaryText): commentaryText is string => Boolean(commentaryText));
 }
 
 function isAssistantTurnResultEmpty(result: GenerateAssistantTurnResult): boolean {
@@ -448,6 +484,7 @@ export async function* query(
   let previousResponseId = params.previousResponseId;
   const reasoningSummaries: string[] = [];
   const seenReasoningSummaries = new Set<string>();
+  const seenCommentaryTexts = new Set<string>();
 
   const shouldRequireToolOnFirstTurn = shouldForceToolUse(
     getLatestUserPrompt(workingMessages),
@@ -531,6 +568,10 @@ export async function* query(
       seenReasoningSummaries,
       collectReasoningSummariesFromUpdates(pendingStreamUpdates),
     );
+    appendUniqueCommentaryTexts(
+      seenCommentaryTexts,
+      collectCommentaryTextsFromUpdates(pendingStreamUpdates),
+    );
 
     while (pendingStreamUpdates.length > 0) {
       const streamUpdate = pendingStreamUpdates.shift();
@@ -545,6 +586,10 @@ export async function* query(
       seenReasoningSummaries,
       assistantTurn.reasoningSummaries,
     );
+    const newCommentaryTexts = appendUniqueCommentaryTexts(
+      seenCommentaryTexts,
+      assistantTurn.commentaryTexts,
+    );
 
     if (params.debug) {
       yield {
@@ -552,6 +597,7 @@ export async function* query(
         debugEntries: [
           `[RG_CLI][debug] query.assistantTurnMeta\n${JSON.stringify({
             iteration,
+            commentaryTexts: assistantTurn.commentaryTexts ?? [],
             responseId: assistantTurn.responseId ?? null,
             reasoningSummaries: assistantTurn.reasoningSummaries ?? [],
             rawOutputItemTypes: summarizeRawOutputItemTypes(
@@ -561,6 +607,13 @@ export async function* query(
             fallbackUsed,
           }, null, 2)}`,
         ],
+      };
+    }
+
+    for (const commentaryText of newCommentaryTexts) {
+      yield {
+        addedMessages: [],
+        commentaryText,
       };
     }
 

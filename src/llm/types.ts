@@ -81,6 +81,7 @@ export type GenerateAssistantTurnResult = {
     | AgentConversationTextBlock
     | AgentConversationToolUseBlock
   >;
+  commentaryTexts?: string[];
   reasoningSummaries?: string[];
   responseId?: string;
   rawOutputItems?: unknown[];
@@ -98,6 +99,10 @@ export type AssistantTurnStreamEvent =
   | {
     type: "output_text_delta";
     delta: string;
+  }
+  | {
+    type: "commentary_message";
+    text: string;
   };
 
 export interface LlmClient {

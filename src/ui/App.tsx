@@ -46,6 +46,7 @@ export function App({ config }: AppProps) {
     createChatSession(cwd, [getWelcomeMessage()])
   );
   const [isLoading, setIsLoading] = useState(false);
+  const [liveCommentaryText, setLiveCommentaryText] = useState<string | undefined>();
   const [liveThinkingText, setLiveThinkingText] = useState<string | undefined>();
   const titleGenerationInFlight = useRef(new Set<string>());
   const queryEngineRef = useRef(new QueryEngine({ config }));
@@ -125,6 +126,7 @@ export function App({ config }: AppProps) {
   function replaceActiveSession(session: PersistedChatSession): void {
     syncMessageIdSequence(session.messages);
     setActiveSession(session);
+    setLiveCommentaryText(undefined);
     scheduleLiveThinkingText(undefined, { immediate: true });
   }
 
@@ -243,6 +245,7 @@ export function App({ config }: AppProps) {
     }
 
     setIsLoading(true);
+    setLiveCommentaryText(undefined);
     scheduleLiveThinkingText(undefined, { immediate: true });
     let latestSession = activeSession;
 
@@ -257,6 +260,8 @@ export function App({ config }: AppProps) {
         if (sessionChanged) {
           setActiveSession(step.session);
         }
+
+        setLiveCommentaryText(step.liveCommentaryText);
 
         scheduleLiveThinkingText(step.liveThinkingText, {
           immediate: step.persist || step.liveThinkingText === undefined,
@@ -288,10 +293,12 @@ export function App({ config }: AppProps) {
       );
 
       setActiveSession(sessionAfterFailureReply);
+      setLiveCommentaryText(undefined);
       scheduleLiveThinkingText(undefined, { immediate: true });
       await persistSession(sessionAfterFailureReply);
     } finally {
       setIsLoading(false);
+      setLiveCommentaryText(undefined);
       scheduleLiveThinkingText(undefined, { immediate: true });
     }
   }
@@ -318,7 +325,10 @@ export function App({ config }: AppProps) {
         transcriptKey={activeSession.id}
       />
       <ThinkingPanel text={liveThinkingText} isLoading={isLoading} />
-      <Footer isLoading={isLoading} />
+      <Footer
+        isLoading={isLoading}
+        commentaryText={liveCommentaryText}
+      />
       <PromptInput
         onSubmit={handleSubmit}
         onExitRequest={exit}
