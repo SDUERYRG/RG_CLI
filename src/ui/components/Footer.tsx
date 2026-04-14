@@ -1,10 +1,4 @@
-/**
- * 文件信息
- * 时间：2026-04-03 23:50:53 +08:00
- * 作用：渲染底部快捷键提示区域。
- * 说明：独立组件便于后续增加状态栏、模式提示或快捷帮助。
- */
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Box, Text } from "ink";
 import { theme } from "../theme.ts";
 
@@ -12,31 +6,63 @@ type FooterProps = {
   isLoading?: boolean;
 };
 
+const LOADING_BADGE_FRAMES = ["[AI]", "[AI]", "[AI]", "[AI]"] as const;
+const LOADING_SPINNER_FRAMES = ["-", "\\", "|", "/"] as const;
+const LOADING_DOT_FRAMES = ["", ".", "..", "..."] as const;
+const LOADING_FRAME_INTERVAL_MS = 120;
+
+export function getLoadingIndicatorFrame(frame: number) {
+  const normalizedFrame = Math.max(0, frame);
+
+  return {
+    badge: LOADING_BADGE_FRAMES[normalizedFrame % LOADING_BADGE_FRAMES.length]!,
+    spinner: LOADING_SPINNER_FRAMES[normalizedFrame % LOADING_SPINNER_FRAMES.length]!,
+    dots: LOADING_DOT_FRAMES[normalizedFrame % LOADING_DOT_FRAMES.length]!,
+  };
+}
+
 export function Footer({ isLoading = false }: FooterProps) {
-  if (isLoading) {
-    return (
-      <Box
-        marginTop={1}
-        borderStyle="round"
-        borderColor={theme.secondary}
-        paddingX={1}
-      >
-        <Text color={theme.accent}>正在请求模型响应，请稍候...</Text>
-      </Box>
-    );
+  const [frame, setFrame] = useState(0);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setFrame(0);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setFrame((currentFrame) => currentFrame + 1);
+    }, LOADING_FRAME_INTERVAL_MS);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [isLoading]);
+
+  if (!isLoading) {
+    return null;
   }
+
+  const indicator = getLoadingIndicatorFrame(frame);
 
   return (
     <Box
       marginTop={1}
       borderStyle="round"
-      borderColor={theme.secondary}
+      borderColor={theme.thinking}
       paddingX={1}
+      flexDirection="column"
     >
-      <Text color={theme.secondary}>
-        按 <Text color={theme.primary} bold>Q</Text> 退出，或按{" "}
-        <Text color={theme.primary} bold>Ctrl+C</Text> 强制退出
-      </Text>
+      <Box>
+        <Text color={theme.accent} bold>
+          {indicator.badge}
+        </Text>
+        <Text> </Text>
+        <Text color={theme.thinking} bold>
+          {indicator.spinner} 思考中{indicator.dots}
+        </Text>
+      </Box>
+      <Text dimColor>正在分析上下文并生成回答</Text>
     </Box>
   );
 }

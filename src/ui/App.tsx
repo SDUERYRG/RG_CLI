@@ -30,6 +30,7 @@ import {
   formatLiveThinkingDisplayText,
   LIVE_THINKING_UPDATE_INTERVAL_MS,
 } from "./liveThinking.ts";
+import { Footer } from "./components/Footer.tsx";
 import { MessageList } from "./components/MessageList.tsx";
 import { PromptInput } from "./components/PromptInput.tsx";
 import { ThinkingPanel } from "./components/ThinkingPanel.tsx";
@@ -317,6 +318,7 @@ export function App({ config }: AppProps) {
         transcriptKey={activeSession.id}
       />
       <ThinkingPanel text={liveThinkingText} isLoading={isLoading} />
+      <Footer isLoading={isLoading} />
       <PromptInput
         onSubmit={handleSubmit}
         onExitRequest={exit}
