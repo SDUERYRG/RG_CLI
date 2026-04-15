@@ -417,25 +417,34 @@ export function App({ config }: AppProps) {
         transientMessages={liveTurnMessages}
         transcriptKey={activeSession.id}
       />
-      <Box flexDirection="column" flexShrink={0} marginTop={1}>
-        <Header />
-        <Box flexDirection="column" marginBottom={1}>
-          <Box justifyContent="space-between">
-            <Text bold>{`当前会话：${sessionTitle}`}</Text>
-            <Text dimColor>
-              按 <Text color="blueBright" bold>Q</Text> 退出，或按{" "}
-              <Text color="blueBright" bold>Ctrl+C</Text> 强制退出
-            </Text>
+      <Box
+        flexDirection="row"
+        alignItems="flex-end"
+        flexShrink={0}
+        marginTop={1}
+      >
+        <Box flexDirection="column" flexGrow={1} marginRight={2}>
+          <Box flexDirection="column" marginBottom={1}>
+            <Box justifyContent="space-between">
+              <Text bold>{`当前会话：${sessionTitle}`}</Text>
+              <Text dimColor>
+                按 <Text color="blueBright" bold>Q</Text> 退出，或按{" "}
+                <Text color="blueBright" bold>Ctrl+C</Text> 强制退出
+              </Text>
+            </Box>
+            <Text dimColor>{`摘要：${sessionSummary}`}</Text>
           </Box>
-          <Text dimColor>{`摘要：${sessionSummary}`}</Text>
+          <ThinkingPanel text={liveThinkingText} isLoading={isLoading} />
+          <Footer isLoading={isLoading} />
+          <PromptInput
+            onSubmit={handleSubmit}
+            onExitRequest={exit}
+            isBusy={isLoading}
+          />
         </Box>
-        <ThinkingPanel text={liveThinkingText} isLoading={isLoading} />
-        <Footer isLoading={isLoading} />
-        <PromptInput
-          onSubmit={handleSubmit}
-          onExitRequest={exit}
-          isBusy={isLoading}
-        />
+        <Box flexDirection="column" flexShrink={0}>
+          <Header />
+        </Box>
       </Box>
     </Box>
   );
