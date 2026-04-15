@@ -7,7 +7,6 @@
 import React, { useLayoutEffect, useRef, useState } from "react";
 import { Box, Static, Text } from "ink";
 import type { ChatMessage } from "../../session/index.ts";
-import { Header } from "./Header.tsx";
 import { theme } from "../theme.ts";
 
 type MessageListProps = {
@@ -182,7 +181,6 @@ export const MessageList = React.memo(function MessageList({
 
   return (
     <Box key={sessionKey} flexDirection="column">
-      <Header />
       <Static key={`${sessionKey}:${staticResetVersion}`} items={staticMessages}>
         {(message) => <MessageItem key={message.id} message={message} />}
       </Static>

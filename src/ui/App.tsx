@@ -32,6 +32,7 @@ import {
   LIVE_THINKING_UPDATE_INTERVAL_MS,
 } from "./liveThinking.ts";
 import { Footer } from "./components/Footer.tsx";
+import { Header } from "./components/Header.tsx";
 import { MessageList } from "./components/MessageList.tsx";
 import { PromptInput } from "./components/PromptInput.tsx";
 import { ThinkingPanel } from "./components/ThinkingPanel.tsx";
@@ -410,29 +411,32 @@ export function App({ config }: AppProps) {
 
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
-      <Box flexDirection="column" marginBottom={1}>
-        <Box justifyContent="space-between">
-          <Text bold>{`当前会话：${sessionTitle}`}</Text>
-          <Text dimColor>
-            按 <Text color="blueBright" bold>Q</Text> 退出，或按{" "}
-            <Text color="blueBright" bold>Ctrl+C</Text> 强制退出
-          </Text>
-        </Box>
-        <Text dimColor>{`摘要：${sessionSummary}`}</Text>
-      </Box>
       <MessageList
         key={activeSession.id}
         messages={frozenMessages}
         transientMessages={liveTurnMessages}
         transcriptKey={activeSession.id}
       />
-      <ThinkingPanel text={liveThinkingText} isLoading={isLoading} />
-      <Footer isLoading={isLoading} />
-      <PromptInput
-        onSubmit={handleSubmit}
-        onExitRequest={exit}
-        isBusy={isLoading}
-      />
+      <Box flexDirection="column" flexShrink={0} marginTop={1}>
+        <Header />
+        <Box flexDirection="column" marginBottom={1}>
+          <Box justifyContent="space-between">
+            <Text bold>{`当前会话：${sessionTitle}`}</Text>
+            <Text dimColor>
+              按 <Text color="blueBright" bold>Q</Text> 退出，或按{" "}
+              <Text color="blueBright" bold>Ctrl+C</Text> 强制退出
+            </Text>
+          </Box>
+          <Text dimColor>{`摘要：${sessionSummary}`}</Text>
+        </Box>
+        <ThinkingPanel text={liveThinkingText} isLoading={isLoading} />
+        <Footer isLoading={isLoading} />
+        <PromptInput
+          onSubmit={handleSubmit}
+          onExitRequest={exit}
+          isBusy={isLoading}
+        />
+      </Box>
     </Box>
   );
 }
