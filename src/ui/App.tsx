@@ -8,6 +8,7 @@ import type { AppConfig } from "../config/defaults.ts";
 import React, { startTransition, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp } from "ink";
 import {
+  type ChatMessage,
   createAssistantReply,
   createChatSession,
   createMessage,
@@ -39,14 +40,47 @@ type AppProps = {
   config: AppConfig;
 };
 
+function mergeTimelineWithPersistedMessages(
+  timelineMessages: ChatMessage[],
+  nextPersistedMessages: ChatMessage[],
+): ChatMessage[] {
+  const nextTimelineMessages = timelineMessages.map((timelineMessage) => {
+    const nextPersistedMessage = nextPersistedMessages.find((message) =>
+      message.id === timelineMessage.id
+    );
+
+    return nextPersistedMessage ?? timelineMessage;
+  });
+
+  const existingMessageIds = new Set(nextTimelineMessages.map((message) => message.id));
+  for (const nextPersistedMessage of nextPersistedMessages) {
+    if (existingMessageIds.has(nextPersistedMessage.id)) {
+      continue;
+    }
+
+    existingMessageIds.add(nextPersistedMessage.id);
+    nextTimelineMessages.push(nextPersistedMessage);
+  }
+
+  return nextTimelineMessages;
+}
+
 export function App({ config }: AppProps) {
   const { exit } = useApp();
   const cwd = getCwd();
-  const [activeSession, setActiveSession] = useState<PersistedChatSession>(() =>
-    createChatSession(cwd, [getWelcomeMessage()])
+  const initialSessionRef = useRef<PersistedChatSession | undefined>(undefined);
+  if (!initialSessionRef.current) {
+    initialSessionRef.current = createChatSession(cwd, [getWelcomeMessage()]);
+  }
+
+  const [activeSession, setActiveSession] = useState<PersistedChatSession>(
+    initialSessionRef.current,
   );
+  const [frozenMessages, setFrozenMessages] = useState<ChatMessage[]>(
+    initialSessionRef.current.messages,
+  );
+  const [liveTurnMessages, setLiveTurnMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [liveCommentaryText, setLiveCommentaryText] = useState<string | undefined>();
   const [liveThinkingText, setLiveThinkingText] = useState<string | undefined>();
   const titleGenerationInFlight = useRef(new Set<string>());
   const queryEngineRef = useRef(new QueryEngine({ config }));
@@ -56,9 +90,15 @@ export function App({ config }: AppProps) {
     undefined,
   );
   const lastLiveThinkingFlushAtRef = useRef(0);
-  const messages = activeSession.messages;
+  const liveTurnMessagesRef = useRef(liveTurnMessages);
+  const turnStartMessageCountRef = useRef<number | undefined>(undefined);
+  const lastCommentaryTextRef = useRef<string | undefined>();
   const sessionTitle = getChatSessionDisplayTitle(activeSession);
   const sessionSummary = getChatSessionDisplaySummary(activeSession);
+
+  useEffect(() => {
+    liveTurnMessagesRef.current = liveTurnMessages;
+  }, [liveTurnMessages]);
 
   function flushLiveThinkingText() {
     if (liveThinkingFlushTimerRef.current) {
@@ -123,10 +163,43 @@ export function App({ config }: AppProps) {
     return createChatSession(cwd, [getWelcomeMessage()]);
   }
 
+  function resetLiveTurnTimeline(): void {
+    setLiveTurnMessages([]);
+    liveTurnMessagesRef.current = [];
+    turnStartMessageCountRef.current = undefined;
+    lastCommentaryTextRef.current = undefined;
+  }
+
+  function syncTurnPersistedMessages(session: PersistedChatSession): void {
+    const turnStartMessageCount = turnStartMessageCountRef.current;
+    if (turnStartMessageCount === undefined) {
+      return;
+    }
+
+    const nextPersistedTurnMessages = session.messages.slice(turnStartMessageCount);
+    setLiveTurnMessages((currentMessages) => {
+      const nextMessages = mergeTimelineWithPersistedMessages(
+        currentMessages,
+        nextPersistedTurnMessages,
+      );
+      liveTurnMessagesRef.current = nextMessages;
+      return nextMessages;
+    });
+  }
+
+  function finalizeLiveTurnIntoFrozenMessages(baseMessages: ChatMessage[]): void {
+    setFrozenMessages([
+      ...baseMessages,
+      ...liveTurnMessagesRef.current,
+    ]);
+    resetLiveTurnTimeline();
+  }
+
   function replaceActiveSession(session: PersistedChatSession): void {
     syncMessageIdSequence(session.messages);
     setActiveSession(session);
-    setLiveCommentaryText(undefined);
+    setFrozenMessages(session.messages);
+    resetLiveTurnTimeline();
     scheduleLiveThinkingText(undefined, { immediate: true });
   }
 
@@ -185,7 +258,7 @@ export function App({ config }: AppProps) {
           return updatedSession;
         });
       } catch {
-        // AI 标题生成失败不影响主对话流程。
+        // AI 鏍囬鐢熸垚澶辫触涓嶅奖鍝嶄富瀵硅瘽娴佺▼銆?
       } finally {
         titleGenerationInFlight.current.delete(session.id);
       }
@@ -206,18 +279,20 @@ export function App({ config }: AppProps) {
 
     if (slashResult.type !== "not-a-command") {
       if (slashResult.type === "append-messages") {
-        setActiveSession((currentSession) =>
-          updateChatSessionMessages(currentSession, [
-            ...currentSession.messages,
-            ...slashResult.messages,
-          ])
-        );
+        const nextSession = updateChatSessionMessages(activeSession, [
+          ...activeSession.messages,
+          ...slashResult.messages,
+        ]);
+        setActiveSession(nextSession);
+        setFrozenMessages(nextSession.messages);
+        resetLiveTurnTimeline();
       }
 
       if (slashResult.type === "replace-messages") {
-        setActiveSession((currentSession) =>
-          updateChatSessionMessages(currentSession, slashResult.messages)
-        );
+        const nextSession = updateChatSessionMessages(activeSession, slashResult.messages);
+        setActiveSession(nextSession);
+        setFrozenMessages(nextSession.messages);
+        resetLiveTurnTimeline();
       }
 
       if (slashResult.type === "start-new-session") {
@@ -235,6 +310,8 @@ export function App({ config }: AppProps) {
           ...slashResult.messages,
         ]);
         setActiveSession(renamedSessionWithAck);
+        setFrozenMessages(renamedSessionWithAck.messages);
+        resetLiveTurnTimeline();
         await persistSession(renamedSessionWithAck);
       }
 
@@ -245,7 +322,10 @@ export function App({ config }: AppProps) {
     }
 
     setIsLoading(true);
-    setLiveCommentaryText(undefined);
+    const frozenMessagesBeforeTurn = activeSession.messages;
+    setFrozenMessages(frozenMessagesBeforeTurn);
+    resetLiveTurnTimeline();
+    turnStartMessageCountRef.current = frozenMessagesBeforeTurn.length;
     scheduleLiveThinkingText(undefined, { immediate: true });
     let latestSession = activeSession;
 
@@ -261,7 +341,27 @@ export function App({ config }: AppProps) {
           setActiveSession(step.session);
         }
 
-        setLiveCommentaryText(step.liveCommentaryText);
+        if (
+          step.liveCommentaryText &&
+          step.liveCommentaryText !== lastCommentaryTextRef.current
+        ) {
+          lastCommentaryTextRef.current = step.liveCommentaryText;
+          setLiveTurnMessages((currentMessages) => {
+            const nextMessages = [
+              ...currentMessages,
+              createMessage("assistant", step.liveCommentaryText!, {
+                includeInContext: false,
+                kind: "commentary",
+              }),
+            ];
+            liveTurnMessagesRef.current = nextMessages;
+            return nextMessages;
+          });
+        }
+
+        if (step.persist) {
+          syncTurnPersistedMessages(step.session);
+        }
 
         scheduleLiveThinkingText(step.liveThinkingText, {
           immediate: step.persist || step.liveThinkingText === undefined,
@@ -272,6 +372,7 @@ export function App({ config }: AppProps) {
         }
       }
       maybeGenerateAiTitle(latestSession);
+      finalizeLiveTurnIntoFrozenMessages(frozenMessagesBeforeTurn);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const latestMessage = latestSession.messages.at(-1);
@@ -293,12 +394,12 @@ export function App({ config }: AppProps) {
       );
 
       setActiveSession(sessionAfterFailureReply);
-      setLiveCommentaryText(undefined);
+      syncTurnPersistedMessages(sessionAfterFailureReply);
       scheduleLiveThinkingText(undefined, { immediate: true });
       await persistSession(sessionAfterFailureReply);
+      finalizeLiveTurnIntoFrozenMessages(frozenMessagesBeforeTurn);
     } finally {
       setIsLoading(false);
-      setLiveCommentaryText(undefined);
       scheduleLiveThinkingText(undefined, { immediate: true });
     }
   }
@@ -321,14 +422,12 @@ export function App({ config }: AppProps) {
       </Box>
       <MessageList
         key={activeSession.id}
-        messages={messages}
+        messages={frozenMessages}
+        transientMessages={liveTurnMessages}
         transcriptKey={activeSession.id}
       />
       <ThinkingPanel text={liveThinkingText} isLoading={isLoading} />
-      <Footer
-        isLoading={isLoading}
-        commentaryText={liveCommentaryText}
-      />
+      <Footer isLoading={isLoading} />
       <PromptInput
         onSubmit={handleSubmit}
         onExitRequest={exit}

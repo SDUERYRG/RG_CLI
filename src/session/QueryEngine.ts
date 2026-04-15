@@ -127,6 +127,17 @@ function createThinkingMessage(content: string) {
   );
 }
 
+function createCommentaryMessage(content: string) {
+  return createMessage(
+    "assistant",
+    content,
+    {
+      includeInContext: false,
+      kind: "commentary",
+    },
+  );
+}
+
 function joinReasoningSummaries(reasoningSummaries: string[] | undefined): string | undefined {
   if (!reasoningSummaries) {
     return undefined;
@@ -279,9 +290,7 @@ function deriveDisplayMessagesFromAgentMessages(
         if (block.type === "text" && block.text.trim()) {
           displayMessages = [
             ...displayMessages,
-            createAssistantReply(block.text.trim(), {
-              includeInContext: false,
-            }),
+            createCommentaryMessage(block.text.trim()),
           ];
           continue;
         }

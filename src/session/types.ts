@@ -12,7 +12,7 @@ export type ChatMessage = {
   content: string;
   includeInContext?: boolean;
   toolCallId?: string;
-  kind?: "regular" | "tool_call" | "tool_result" | "debug" | "thinking";
+  kind?: "regular" | "tool_call" | "tool_result" | "debug" | "thinking" | "commentary";
 };
 
 export type AgentMessageRole = "system" | "assistant" | "user";

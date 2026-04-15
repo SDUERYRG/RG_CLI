@@ -3,7 +3,6 @@ import { Box, Text } from "ink";
 import { theme } from "../theme.ts";
 
 type FooterProps = {
-  commentaryText?: string;
   isLoading?: boolean;
 };
 
@@ -22,7 +21,7 @@ export function getLoadingIndicatorFrame(frame: number) {
   };
 }
 
-export function Footer({ commentaryText, isLoading = false }: FooterProps) {
+export function Footer({ isLoading = false }: FooterProps) {
   const [frame, setFrame] = useState(0);
 
   useEffect(() => {
@@ -63,13 +62,6 @@ export function Footer({ commentaryText, isLoading = false }: FooterProps) {
           {indicator.spinner} 思考中{indicator.dots}
         </Text>
       </Box>
-      {commentaryText?.trim()
-        ? (
-          <Box marginTop={1}>
-            <Text color={theme.secondary}>• {commentaryText}</Text>
-          </Box>
-        )
-        : null}
       <Text dimColor>正在分析上下文并生成回答</Text>
     </Box>
   );

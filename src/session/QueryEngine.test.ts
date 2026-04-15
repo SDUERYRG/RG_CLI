@@ -420,7 +420,7 @@ test("QueryEngine renders multiple tool calls before their streamed results", as
   expect(toolMessages[1]?.content).toContain("\n\n");
 });
 
-test("QueryEngine preserves assistant text that accompanies a tool call", async () => {
+test("QueryEngine renders assistant text that accompanies a tool call as commentary", async () => {
   let turn = 0;
   const client: LlmClient = {
     async generateText(_params: GenerateTextParams): Promise<GenerateTextResult> {
@@ -475,6 +475,7 @@ test("QueryEngine preserves assistant text that accompanies a tool call", async 
 
   expect(finalSession.messages[0]?.content).toBe(welcomeMessage.content);
   expect(finalSession.messages[1]?.content).toBe("hello");
+  expect(finalSession.messages[2]?.kind).toBe("commentary");
   expect(finalSession.messages[2]?.content).toBe("Let me inspect that first.");
   expect(finalSession.messages[3]?.kind).toBe("tool_call");
   expect(finalSession.messages[3]?.content).toContain("missing_tool_1");
